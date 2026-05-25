@@ -1,0 +1,144 @@
+name: Build Push Deploy
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+env:
+  DOCKERHUB_NAMESPACE: jmarji
+  BACKEND_IMAGE_NAME: flowmint-backend
+  FRONTEND_IMAGE_NAME: flowmint-frontend
+  K8S_NAMESPACE: flowmint
+
+jobs:
+  build:
+    name: Build and Push Images
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.compute-tag.outputs.image_tag }}
+      backend_changed: ${{ steps.changes.outputs.backend }}
+      frontend_changed: ${{ steps.changes.outputs.frontend }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compute immutable image tag
+        id: compute-tag
+        run: echo "image_tag=sha-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Detect changed services
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            backend:
+              - 'services/fastapi-backend/**'
+            frontend:
+              - 'services/vue-frontend/**'
+
+      - name: Log in to Docker Hub
+        if: steps.changes.outputs.backend == 'true' || steps.changes.outputs.frontend == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: jmarji
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push backend image
+        if: steps.changes.outputs.backend == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./services/fastapi-backend
+          file: ./services/fastapi-backend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.DOCKERHUB_NAMESPACE }}/${{ env.BACKEND_IMAGE_NAME }}:${{ steps.compute-tag.outputs.image_tag }}
+            ${{ env.DOCKERHUB_NAMESPACE }}/${{ env.BACKEND_IMAGE_NAME }}:latest
+
+      - name: Build and push frontend image
+        if: steps.changes.outputs.frontend == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./services/vue-frontend
+          file: ./services/vue-frontend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.DOCKERHUB_NAMESPACE }}/${{ env.FRONTEND_IMAGE_NAME }}:${{ steps.compute-tag.outputs.image_tag }}
+            ${{ env.DOCKERHUB_NAMESPACE }}/${{ env.FRONTEND_IMAGE_NAME }}:latest
+
+      - name: No source changes detected
+        if: steps.changes.outputs.backend != 'true' && steps.changes.outputs.frontend != 'true'
+        run: echo "No backend or frontend changes; skipping image build."
+
+  deploy:
+    name: Deploy to LKE
+    runs-on: ubuntu-latest
+    needs: build
+    if: needs.build.outputs.backend_changed == 'true' || needs.build.outputs.frontend_changed == 'true'
+    env:
+      IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+      BACKEND_CHANGED: ${{ needs.build.outputs.backend_changed }}
+      FRONTEND_CHANGED: ${{ needs.build.outputs.frontend_changed }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.30.0
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p "$HOME/.kube"
+          if echo "${{ secrets.LKE_KUBECONFIG }}" | grep -q "apiVersion:"; then
+            printf '%s' "${{ secrets.LKE_KUBECONFIG }}" > "$HOME/.kube/config"
+          else
+            echo "${{ secrets.LKE_KUBECONFIG }}" | base64 -d > "$HOME/.kube/config"
+          fi
+          chmod 600 "$HOME/.kube/config"
+
+      - name: Validate cluster access
+        run: |
+          kubectl version --client
+          kubectl get nodes
+
+      - name: Apply deployment manifests
+        run: |
+          kubectl apply -f deployment/namespace.yaml
+          kubectl apply -f deployment/configmaps.yaml
+          kubectl apply -f deployment/persistent-volume-claims.yaml
+          kubectl apply -f deployment/services.yaml
+          kubectl apply -f deployment/deployments.yaml
+          kubectl apply -f deployment/ingress/
+
+      - name: Update images for changed services
+        run: |
+          if [[ "${BACKEND_CHANGED}" == "true" ]]; then
+            kubectl set image deployment/backend \
+              backend="${DOCKERHUB_NAMESPACE}/${BACKEND_IMAGE_NAME}:${IMAGE_TAG}" \
+              -n "${K8S_NAMESPACE}"
+          fi
+          if [[ "${FRONTEND_CHANGED}" == "true" ]]; then
+            kubectl set image deployment/frontend \
+              frontend="${DOCKERHUB_NAMESPACE}/${FRONTEND_IMAGE_NAME}:${IMAGE_TAG}" \
+              -n "${K8S_NAMESPACE}"
+          fi
+
+      - name: Wait for rollout
+        run: |
+          if [[ "${BACKEND_CHANGED}" == "true" ]]; then
+            kubectl rollout status deployment/backend -n "${K8S_NAMESPACE}" --timeout=10m
+          fi
+          if [[ "${FRONTEND_CHANGED}" == "true" ]]; then
+            kubectl rollout status deployment/frontend -n "${K8S_NAMESPACE}" --timeout=10m
+          fi
+
+      - name: Post-deploy pod status
+        run: kubectl get pods -n "${K8S_NAMESPACE}" -o wide

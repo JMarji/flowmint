@@ -1,0 +1,72 @@
+@import "tailwindcss";
+
+@theme {
+  --color-mint: #3DDBB8;
+  --color-mint-light: #6EEBD0;
+  --color-mint-dark: #27B898;
+  --color-mint-dim: rgba(61, 219, 184, 0.12);
+  --color-bg: #080C0B;
+  --color-surface: #101916;
+  --color-surface-2: #192620;
+  --color-border: #253D35;
+  --color-text-primary: #E4F2EE;
+  --color-text-muted: #7A9E94;
+}
+
+:root {
+  --mint: #3DDBB8;
+  --mint-light: #6EEBD0;
+  --mint-dark: #27B898;
+  --mint-dim: rgba(61, 219, 184, 0.12);
+  --bg: #080C0B;
+  --surface: #101916;
+  --surface-2: #192620;
+  --border: #253D35;
+  --text: #E4F2EE;
+  --text-muted: #7A9E94;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--surface); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--mint-dark); }
+
+/* PrimeVue overrides — apply mint theme to components */
+.p-button-primary {
+  background: var(--mint) !important;
+  border-color: var(--mint) !important;
+  color: #080C0B !important;
+  font-weight: 600;
+}
+.p-button-primary:hover {
+  background: var(--mint-light) !important;
+  border-color: var(--mint-light) !important;
+}
+.p-inputtext {
+  background: var(--surface-2) !important;
+  border-color: var(--border) !important;
+  color: var(--text) !important;
+}
+.p-inputtext:focus {
+  border-color: var(--mint) !important;
+  box-shadow: 0 0 0 2px var(--mint-dim) !important;
+}
+.p-card {
+  background: var(--surface) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text) !important;
+}

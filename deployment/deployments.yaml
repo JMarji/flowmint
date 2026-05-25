@@ -1,0 +1,157 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: flowmint
+spec:
+  selector:
+    matchLabels:
+      app: flowmint
+      component: postgres
+  template:
+    metadata:
+      labels:
+        app: flowmint
+        component: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: flowmint
+            - name: POSTGRES_USER
+              value: flowmint_admin
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: flowmint-secrets
+                  key: POSTGRES_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql/data
+            - name: postgres-init
+              mountPath: /docker-entrypoint-initdb.d/init.sql
+              subPath: init.sql
+      volumes:
+        - name: postgres-storage
+          persistentVolumeClaim:
+            claimName: flowmint-postgres-pvc
+        - name: postgres-init
+          configMap:
+            name: postgres-init
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: flowmint
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flowmint
+      component: backend
+  template:
+    metadata:
+      labels:
+        app: flowmint
+        component: backend
+    spec:
+      imagePullSecrets:
+        - name: dockerhub-secret
+      containers:
+        - name: backend
+          image: jmarji/flowmint-backend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: flowmint-secrets
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgresql://flowmint_admin:$(POSTGRES_PASSWORD)@postgres:5432/flowmint"
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: flowmint-secrets
+                  key: SECRET_KEY
+            - name: PLAID_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: flowmint-secrets
+                  key: PLAID_CLIENT_ID
+            - name: PLAID_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: flowmint-secrets
+                  key: PLAID_SECRET
+            - name: LINODE_OBJ_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: flowmint-secrets
+                  key: LINODE_OBJ_ACCESS_KEY
+            - name: LINODE_OBJ_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: flowmint-secrets
+                  key: LINODE_OBJ_SECRET_KEY
+            - name: LINODE_OBJ_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: flowmint-secrets
+                  key: LINODE_OBJ_BUCKET
+            - name: LINODE_OBJ_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: flowmint-secrets
+                  key: LINODE_OBJ_ENDPOINT
+            - name: ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: flowmint-secrets
+                  key: ENCRYPTION_KEY
+            - name: PLAID_ENV
+              valueFrom:
+                secretKeyRef:
+                  name: flowmint-secrets
+                  key: PLAID_ENV
+            - name: FRONTEND_ORIGINS
+              value: "https://flowmint.tradepapi.io"
+            - name: ENV
+              value: "production"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: flowmint
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flowmint
+      component: frontend
+  template:
+    metadata:
+      labels:
+        app: flowmint
+        component: frontend
+    spec:
+      imagePullSecrets:
+        - name: dockerhub-secret
+      containers:
+        - name: frontend
+          image: jmarji/flowmint-frontend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80

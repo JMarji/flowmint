@@ -1,0 +1,144 @@
+<template>
+  <div class="p-6 max-w-4xl mx-auto">
+    <div class="flex items-center justify-between mb-8">
+      <div>
+        <h1 class="text-2xl font-bold" style="color: var(--text)">Accounts</h1>
+        <p class="text-sm mt-1" style="color: var(--text-muted)">Linked bank accounts and balances</p>
+      </div>
+      <div class="flex gap-2">
+        <Button @click="syncAccounts" :loading="syncing" icon="pi pi-refresh" severity="secondary" text rounded title="Sync all" />
+        <Button @click="openPlaidLink" :loading="isLinking" label="Link Account" icon="pi pi-plus" class="p-button-primary" />
+      </div>
+    </div>
+
+    <!-- Loading -->
+    <div v-if="loading" class="space-y-3">
+      <div v-for="i in 3" :key="i" class="rounded-xl border p-4 animate-pulse" style="background: var(--surface); border-color: var(--border)">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-lg" style="background: var(--surface-2)"></div>
+          <div class="flex-1 space-y-2">
+            <div class="h-3 rounded w-1/3" style="background: var(--surface-2)"></div>
+            <div class="h-2 rounded w-1/4" style="background: var(--surface-2)"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Empty state -->
+    <div v-else-if="accounts.length === 0" class="rounded-xl border p-12 flex flex-col items-center gap-3 text-center" style="background: var(--surface); border-color: var(--border); border-style: dashed">
+      <i class="pi pi-building-columns text-3xl" style="color: var(--mint)"></i>
+      <p class="text-sm font-medium" style="color: var(--text)">No accounts linked yet</p>
+      <p class="text-xs" style="color: var(--text-muted)">Click "Link Account" to connect your bank through Plaid</p>
+      <Button @click="openPlaidLink" label="Link your first account" class="p-button-primary mt-2" />
+    </div>
+
+    <!-- Grouped by institution -->
+    <div v-else class="space-y-6">
+      <div v-for="(group, inst) in grouped" :key="inst">
+        <p class="text-xs font-semibold uppercase tracking-wider mb-2" style="color: var(--text-muted)">{{ inst }}</p>
+        <div class="space-y-2">
+          <div
+            v-for="acct in group"
+            :key="acct.id"
+            class="rounded-xl border p-4 flex items-center justify-between"
+            style="background: var(--surface); border-color: var(--border)"
+          >
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-lg flex items-center justify-center" style="background: var(--surface-2)">
+                <i :class="`pi ${accountIcon(acct.type)}`" style="color: var(--mint)"></i>
+              </div>
+              <div>
+                <p class="text-sm font-medium" style="color: var(--text)">{{ acct.name }}</p>
+                <p class="text-xs" style="color: var(--text-muted)">{{ acct.subtype }} · ••••{{ acct.mask }}</p>
+              </div>
+            </div>
+            <div class="text-right">
+              <p class="text-lg font-bold" style="color: var(--mint)">${{ fmt(acct.current_balance) }}</p>
+              <p v-if="acct.available_balance !== null" class="text-xs" style="color: var(--text-muted)">
+                ${{ fmt(acct.available_balance) }} available
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Total row -->
+      <div class="rounded-xl border p-4 flex justify-between items-center" style="background: var(--surface-2); border-color: var(--mint)">
+        <p class="font-semibold" style="color: var(--text)">Total Balance</p>
+        <p class="text-xl font-bold" style="color: var(--mint)">${{ fmt(totalBalance) }}</p>
+      </div>
+    </div>
+
+    <!-- Error -->
+    <p v-if="error" class="mt-4 text-sm px-3 py-2 rounded-lg" style="color: #f87171; background: rgba(248,113,113,0.1)">{{ error }}</p>
+  </div>
+</template>
+
+<script setup>
+import { ref, computed, onMounted } from 'vue'
+import Button from 'primevue/button'
+import api from '@/utils/api'
+import { usePlaid } from '@/composables/usePlaid'
+
+const accounts = ref([])
+const loading = ref(true)
+const syncing = ref(false)
+const error = ref('')
+const { isLinking, openLink } = usePlaid()
+
+const grouped = computed(() => {
+  const g = {}
+  for (const a of accounts.value) {
+    const key = a.institution_name || 'Unknown Bank'
+    if (!g[key]) g[key] = []
+    g[key].push(a)
+  }
+  return g
+})
+
+const totalBalance = computed(() =>
+  accounts.value.reduce((sum, a) => sum + (a.current_balance || 0), 0)
+)
+
+const fmt = (val) => val != null ? Number(val).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'
+
+const accountIcon = (type) => {
+  if (type === 'credit') return 'pi-credit-card'
+  if (type === 'loan') return 'pi-percentage'
+  if (type === 'investment') return 'pi-chart-line'
+  return 'pi-building-columns'
+}
+
+const fetchAccounts = async () => {
+  try {
+    const res = await api.get('/api/accounts')
+    accounts.value = res.data
+  } catch (e) {
+    error.value = 'Failed to load accounts'
+  } finally {
+    loading.value = false
+  }
+}
+
+const syncAccounts = async () => {
+  syncing.value = true
+  error.value = ''
+  try {
+    await api.post('/api/plaid/sync')
+    await fetchAccounts()
+  } catch (e) {
+    error.value = 'Sync failed'
+  } finally {
+    syncing.value = false
+  }
+}
+
+const openPlaidLink = () => {
+  openLink(async () => {
+    loading.value = true
+    await fetchAccounts()
+  })
+}
+
+onMounted(fetchAccounts)
+</script>

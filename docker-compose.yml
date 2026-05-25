@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: flowmint
+      POSTGRES_USER: flowmint_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localdev}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deployment/configmaps/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flowmint_admin -d flowmint"]
+      interval: 5s
+      retries: 10
+
+  backend:
+    build: ./services/fastapi-backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://flowmint_admin:${POSTGRES_PASSWORD:-localdev}@postgres:5432/flowmint
+      SECRET_KEY: ${SECRET_KEY:-local-dev-secret-change-in-prod}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      PLAID_CLIENT_ID: ${PLAID_CLIENT_ID}
+      PLAID_SECRET: ${PLAID_SECRET}
+      PLAID_ENV: ${PLAID_ENV:-sandbox}
+      FRONTEND_ORIGINS: http://localhost:5173,http://localhost:4173
+      ENV: development
+      DEV_INSECURE_REFRESH: "1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./services/fastapi-backend:/app
+    command: uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+
+  frontend:
+    build: ./services/vue-frontend
+    ports:
+      - "3000:80"
+
+volumes:
+  postgres_data:
