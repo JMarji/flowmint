@@ -82,9 +82,24 @@ def _ensure_connected_mortgage_properties(user_id: int):
     if not loan_accounts:
         return
 
+    mortgage_accounts = [a for a in loan_accounts if (a.get("subtype") or "").lower() == "mortgage"]
+    non_mortgage_account_ids = [
+        a.get("account_id") for a in loan_accounts
+        if a.get("account_id") and (a.get("subtype") or "").lower() != "mortgage"
+    ]
+
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
-            for acct in loan_accounts:
+            if non_mortgage_account_ids:
+                cur.execute(
+                    """DELETE FROM flowmint.properties
+                       WHERE user_id = %s
+                                                 AND mortgage_account_id = ANY(%s::text[])
+                         AND notes LIKE 'Auto-created from connected mortgage account %%'""",
+                    (user_id, non_mortgage_account_ids)
+                )
+
+            for acct in mortgage_accounts:
                 account_id = acct.get("account_id")
                 if not account_id:
                     continue
