@@ -52,7 +52,7 @@
                 <div class="flex items-center gap-2 mt-0.5">
                   <span
                     class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full"
-                    style="background: rgba(61,219,184,0.14); color: var(--mint)"
+                    :style="accountBadgeStyle(acct)"
                   >
                     {{ accountTypeLabel(acct) }}
                   </span>
@@ -142,6 +142,41 @@ const accountTypeLabel = (acct) => {
     .filter(Boolean)
     .map(s => s[0].toUpperCase() + s.slice(1))
     .join(' ')
+}
+
+const accountTypeCategory = (acct) => {
+  const subtype = (acct.subtype || '').toString().trim().toLowerCase().replace(/[_-]+/g, ' ')
+  const type = (acct.type || '').toString().trim().toLowerCase()
+
+  if (
+    ['mortgage', 'heloc', 'auto', 'student loan', 'personal loan', 'loan'].includes(subtype) ||
+    type === 'loan'
+  ) return 'loan'
+
+  if (subtype.includes('credit') || type === 'credit') return 'credit'
+
+  if (
+    ['checking', 'savings', 'money market', 'cd', 'cash management'].includes(subtype) ||
+    type === 'depository'
+  ) return 'deposit'
+
+  if (
+    subtype.includes('brokerage') ||
+    subtype.includes('retirement') ||
+    subtype.includes('ira') ||
+    type === 'investment'
+  ) return 'investment'
+
+  return 'other'
+}
+
+const accountBadgeStyle = (acct) => {
+  const category = accountTypeCategory(acct)
+  if (category === 'loan') return 'background: rgba(251,146,60,0.16); color: #fb923c'
+  if (category === 'credit') return 'background: rgba(248,113,113,0.16); color: #f87171'
+  if (category === 'deposit') return 'background: rgba(61,219,184,0.14); color: var(--mint)'
+  if (category === 'investment') return 'background: rgba(96,165,250,0.16); color: #60a5fa'
+  return 'background: var(--surface-2); color: var(--text-muted)'
 }
 
 const fetchAccounts = async () => {
