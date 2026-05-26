@@ -49,7 +49,15 @@
               </div>
               <div>
                 <p class="text-sm font-medium" style="color: var(--text)">{{ acct.name }}</p>
-                <p class="text-xs" style="color: var(--text-muted)">{{ acct.subtype }} · ••••{{ acct.mask }}</p>
+                <div class="flex items-center gap-2 mt-0.5">
+                  <span
+                    class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full"
+                    style="background: rgba(61,219,184,0.14); color: var(--mint)"
+                  >
+                    {{ accountTypeLabel(acct) }}
+                  </span>
+                  <p class="text-xs" style="color: var(--text-muted)">••••{{ acct.mask }}</p>
+                </div>
               </div>
             </div>
             <div class="text-right">
@@ -107,6 +115,33 @@ const accountIcon = (type) => {
   if (type === 'loan') return 'pi-percentage'
   if (type === 'investment') return 'pi-chart-line'
   return 'pi-building-columns'
+}
+
+const accountTypeLabel = (acct) => {
+  const raw = (acct.subtype || acct.type || '').toString().trim().toLowerCase()
+  const normalized = raw.replace(/[_-]+/g, ' ')
+
+  const labels = {
+    checking: 'Checking',
+    savings: 'Savings',
+    mortgage: 'Mortgage',
+    heloc: 'HELOC',
+    auto: 'Auto Loan',
+    'student loan': 'Student Loan',
+    'personal loan': 'Personal Loan',
+    credit: 'Credit',
+    'credit card': 'Credit Card',
+    brokerage: 'Brokerage',
+    investment: 'Investment',
+  }
+
+  if (labels[normalized]) return labels[normalized]
+  if (!normalized) return 'Account'
+  return normalized
+    .split(' ')
+    .filter(Boolean)
+    .map(s => s[0].toUpperCase() + s.slice(1))
+    .join(' ')
 }
 
 const fetchAccounts = async () => {
