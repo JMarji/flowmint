@@ -34,6 +34,11 @@ def health():
     return {"status": "ok", "service": "flowmint"}
 
 
+@app.get("/api/version")
+def version():
+    return {"commit": os.environ.get("COMMIT_HASH", "dev")}
+
+
 app.include_router(auth_routes.router)
 app.include_router(plaid.router, prefix="/api")
 app.include_router(accounts.router, prefix="/api")

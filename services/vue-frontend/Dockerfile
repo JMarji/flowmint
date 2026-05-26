@@ -1,5 +1,8 @@
 FROM node:20-slim AS build
 
+ARG COMMIT_HASH=dev
+ENV VITE_COMMIT_HASH=$COMMIT_HASH
+
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci

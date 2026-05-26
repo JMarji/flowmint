@@ -18,6 +18,20 @@
         <NavItem v-for="item in navItems" :key="item.to" :item="item" />
       </nav>
 
+      <!-- Version badges -->
+      <div class="px-4 pb-2 pt-3 border-t" style="border-color: var(--border)">
+        <div class="space-y-1">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-mono" style="color: var(--text-muted)">UI</span>
+            <span class="text-xs font-mono px-1.5 py-0.5 rounded" style="background: var(--surface-2); color: var(--text-muted)">{{ uiHash }}</span>
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-mono" style="color: var(--text-muted)">API</span>
+            <span class="text-xs font-mono px-1.5 py-0.5 rounded" style="background: var(--surface-2); color: var(--text-muted)">{{ apiHash }}</span>
+          </div>
+        </div>
+      </div>
+
       <!-- User footer -->
       <div class="px-4 py-4 border-t" style="border-color: var(--border)">
         <div class="flex items-center gap-3">
@@ -42,9 +56,10 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { RouterView, useRouter } from 'vue-router'
 import { useAuth } from '@/composables/useAuth'
+import api from '@/utils/api'
 
 const auth = useAuth()
 const router = useRouter()
@@ -56,6 +71,20 @@ const handleLogout = async () => {
   await auth.logout()
   router.push({ name: 'login' })
 }
+
+const shortHash = (h) => (h && h !== 'dev') ? h.slice(0, 7) : (h || '—')
+const uiHash = shortHash(import.meta.env.VITE_COMMIT_HASH)
+const apiCommit = ref('…')
+const apiHash = computed(() => shortHash(apiCommit.value))
+
+onMounted(async () => {
+  try {
+    const res = await api.get('/api/version')
+    apiCommit.value = res.data.commit
+  } catch {
+    apiCommit.value = '—'
+  }
+})
 
 const navItems = [
   { label: 'Dashboard',     to: '/dashboard',    icon: 'pi-home' },
