@@ -3,6 +3,9 @@ from pydantic import BaseModel, model_validator
 from typing import Optional
 from database import get_pool
 from auth_routes import get_current_user
+import db_plaid
+import plaid_client as pc
+from routers.plaid import fetch_mortgage_liability
 
 router = APIRouter(tags=["properties"])
 
@@ -43,8 +46,14 @@ def _row_to_property(r) -> dict:
         "mortgage_payment": float(r[10]) if r[10] else None,
         "notes": r[11],
         "created_at": r[12].isoformat(),
+        "mortgage_account_id": r[13],
         "equity": (float(r[6]) if r[6] else 0) - (float(r[8]) if r[8] else 0),
     }
+
+
+_SELECT = """SELECT id, address, city, state, zip, purchase_price, current_value,
+                    purchase_date, mortgage_balance, mortgage_rate, mortgage_payment,
+                    notes, created_at, mortgage_account_id"""
 
 
 @router.get("/properties")
@@ -52,10 +61,7 @@ def list_properties(current_user: dict = Depends(get_current_user)):
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT id, address, city, state, zip, purchase_price, current_value,
-                          purchase_date, mortgage_balance, mortgage_rate, mortgage_payment,
-                          notes, created_at
-                   FROM flowmint.properties WHERE user_id = %s ORDER BY created_at DESC""",
+                f"{_SELECT} FROM flowmint.properties WHERE user_id = %s ORDER BY created_at DESC",
                 (current_user["id"],)
             )
             rows = cur.fetchall()
@@ -73,7 +79,7 @@ def create_property(body: PropertyCreate, current_user: dict = Depends(get_curre
                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    RETURNING id, address, city, state, zip, purchase_price, current_value,
                              purchase_date, mortgage_balance, mortgage_rate, mortgage_payment,
-                             notes, created_at""",
+                             notes, created_at, mortgage_account_id""",
                 (current_user["id"], body.address, body.city, body.state, body.zip,
                  body.purchase_price, body.current_value, body.purchase_date,
                  body.mortgage_balance, body.mortgage_rate, body.mortgage_payment, body.notes)
@@ -88,10 +94,7 @@ def get_property(property_id: int, current_user: dict = Depends(get_current_user
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT id, address, city, state, zip, purchase_price, current_value,
-                          purchase_date, mortgage_balance, mortgage_rate, mortgage_payment,
-                          notes, created_at
-                   FROM flowmint.properties WHERE id = %s AND user_id = %s""",
+                f"{_SELECT} FROM flowmint.properties WHERE id = %s AND user_id = %s",
                 (property_id, current_user["id"])
             )
             row = cur.fetchone()
@@ -130,3 +133,120 @@ def delete_property(property_id: int, current_user: dict = Depends(get_current_u
             if cur.rowcount == 0:
                 raise HTTPException(status_code=404, detail="Property not found")
             conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Mortgage / Plaid linking
+# ---------------------------------------------------------------------------
+
+@router.get("/properties/mortgage-accounts")
+def list_mortgage_accounts(current_user: dict = Depends(get_current_user)):
+    """Return the user's Plaid loan-type accounts available to link as a mortgage."""
+    return db_plaid.get_loan_accounts_for_user(current_user["id"])
+
+
+class LinkMortgageBody(BaseModel):
+    account_id: str
+
+
+@router.post("/properties/{property_id}/link-mortgage")
+def link_mortgage(property_id: int, body: LinkMortgageBody, current_user: dict = Depends(get_current_user)):
+    """Link a Plaid loan account to this property and sync mortgage data."""
+    # Verify property belongs to user
+    prop = get_property(property_id, current_user)
+
+    # Verify the account belongs to the user
+    loan_accounts = db_plaid.get_loan_accounts_for_user(current_user["id"])
+    if not any(a["account_id"] == body.account_id for a in loan_accounts):
+        raise HTTPException(status_code=403, detail="Account not found or not accessible")
+
+    # Fetch liability details from Plaid
+    item = db_plaid.get_item_for_account(body.account_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Bank item not found")
+
+    client = pc.get_plaid_client()
+    liability = fetch_mortgage_liability(client, item["access_token"], body.account_id)
+
+    # Build update: always set the link; sync numeric fields when available
+    updates: dict = {"mortgage_account_id": body.account_id}
+
+    # Balance from the account record (current_balance = outstanding loan balance)
+    acct = next(a for a in loan_accounts if a["account_id"] == body.account_id)
+    if acct["current_balance"] is not None:
+        updates["mortgage_balance"] = acct["current_balance"]
+
+    if liability:
+        if liability["rate"] is not None:
+            updates["mortgage_rate"] = liability["rate"]
+        if liability["payment"] is not None:
+            updates["mortgage_payment"] = liability["payment"]
+
+    cols = ", ".join(f"{k} = %s" for k in updates)
+    vals = list(updates.values()) + [property_id, current_user["id"]]
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE flowmint.properties SET {cols} WHERE id = %s AND user_id = %s",
+                vals
+            )
+            conn.commit()
+
+    return get_property(property_id, current_user)
+
+
+@router.delete("/properties/{property_id}/link-mortgage", status_code=200)
+def unlink_mortgage(property_id: int, current_user: dict = Depends(get_current_user)):
+    """Remove the Plaid mortgage link from this property (keeps manual mortgage fields)."""
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE flowmint.properties SET mortgage_account_id = NULL WHERE id = %s AND user_id = %s",
+                (property_id, current_user["id"])
+            )
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Property not found")
+            conn.commit()
+    return get_property(property_id, current_user)
+
+
+@router.post("/properties/{property_id}/sync-mortgage")
+def sync_mortgage(property_id: int, current_user: dict = Depends(get_current_user)):
+    """Re-fetch live mortgage data from Plaid for a linked property."""
+    prop = get_property(property_id, current_user)
+    if not prop.get("mortgage_account_id"):
+        raise HTTPException(status_code=400, detail="No mortgage account linked")
+
+    account_id = prop["mortgage_account_id"]
+    loan_accounts = db_plaid.get_loan_accounts_for_user(current_user["id"])
+    acct = next((a for a in loan_accounts if a["account_id"] == account_id), None)
+    if not acct:
+        raise HTTPException(status_code=404, detail="Linked account not found")
+
+    item = db_plaid.get_item_for_account(account_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Bank item not found")
+
+    client = pc.get_plaid_client()
+    liability = fetch_mortgage_liability(client, item["access_token"], account_id)
+
+    updates: dict = {}
+    if acct["current_balance"] is not None:
+        updates["mortgage_balance"] = acct["current_balance"]
+    if liability:
+        if liability["rate"] is not None:
+            updates["mortgage_rate"] = liability["rate"]
+        if liability["payment"] is not None:
+            updates["mortgage_payment"] = liability["payment"]
+
+    if updates:
+        cols = ", ".join(f"{k} = %s" for k in updates)
+        with get_pool().connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE flowmint.properties SET {cols} WHERE id = %s AND user_id = %s",
+                    list(updates.values()) + [property_id, current_user["id"]]
+                )
+                conn.commit()
+
+    return get_property(property_id, current_user)

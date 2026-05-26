@@ -22,8 +22,23 @@
         <p class="text-lg font-bold" style="color: var(--text)">${{ fmt(property.equity) }}</p>
       </div>
       <div class="rounded-xl border p-4" style="background: var(--surface); border-color: var(--border)">
-        <p class="text-xs mb-1" style="color: var(--text-muted)">Mortgage Balance</p>
+        <div class="flex items-center justify-between mb-1">
+          <p class="text-xs" style="color: var(--text-muted)">Mortgage Balance</p>
+          <div class="flex items-center gap-1">
+            <span v-if="property.mortgage_account_id" class="text-xs px-1.5 py-0.5 rounded" style="background: rgba(61,219,184,0.15); color: var(--mint)">Plaid</span>
+            <button v-if="property.mortgage_account_id" @click="syncMortgage" :disabled="syncing" title="Sync from Plaid" style="color: var(--mint)" class="hover:opacity-70 disabled:opacity-40">
+              <i class="pi pi-refresh text-xs" :class="syncing ? 'animate-spin' : ''"></i>
+            </button>
+            <button v-if="property.mortgage_account_id" @click="unlinkMortgage" title="Unlink" style="color: var(--text-muted)" class="hover:opacity-70">
+              <i class="pi pi-times text-xs"></i>
+            </button>
+            <button v-else @click="showLinkMortgage = true" title="Link to Plaid" style="color: var(--text-muted)" class="hover:opacity-70">
+              <i class="pi pi-link text-xs"></i>
+            </button>
+          </div>
+        </div>
         <p class="text-lg font-bold" style="color: var(--text)">${{ fmt(property.mortgage_balance) }}</p>
+        <p v-if="property.mortgage_account_id" class="text-xs mt-0.5 truncate" style="color: var(--text-muted)">{{ linkedAccountLabel }}</p>
       </div>
       <div class="rounded-xl border p-4" style="background: var(--surface); border-color: var(--border)">
         <p class="text-xs mb-1" style="color: var(--text-muted)">Monthly Payment</p>
@@ -126,6 +141,38 @@
       </div>
     </div>
 
+    <!-- Link Mortgage dialog -->
+    <Dialog v-model:visible="showLinkMortgage" header="Link Mortgage Account" modal :style="{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)', width: '400px' }">
+      <div class="py-2">
+        <p class="text-xs mb-4" style="color: var(--text-muted)">Select a connected loan account to sync mortgage data automatically. If your lender isn't listed, connect it first via the Accounts tab.</p>
+        <div v-if="loadingLoanAccounts" class="text-sm text-center py-4" style="color: var(--text-muted)">Loading…</div>
+        <div v-else-if="loanAccounts.length === 0" class="rounded-lg p-4 text-center" style="background: var(--surface-2)">
+          <i class="pi pi-building-columns text-2xl mb-2" style="color: var(--mint)"></i>
+          <p class="text-sm" style="color: var(--text)">No loan accounts found</p>
+          <p class="text-xs mt-1" style="color: var(--text-muted)">Go to Accounts and link your mortgage lender via Plaid</p>
+        </div>
+        <div v-else class="space-y-2">
+          <label v-for="acct in loanAccounts" :key="acct.account_id"
+            class="flex items-center gap-3 p-3 rounded-lg cursor-pointer transition"
+            :style="selectedLoanAccount === acct.account_id ? 'background: rgba(61,219,184,0.12); border: 1px solid var(--mint)' : 'background: var(--surface-2); border: 1px solid transparent'">
+            <input type="radio" :value="acct.account_id" v-model="selectedLoanAccount" class="hidden" />
+            <div class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style="background: var(--surface)">
+              <i class="pi pi-percentage text-sm" style="color: var(--mint)"></i>
+            </div>
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-medium" style="color: var(--text)">{{ acct.institution_name }}</p>
+              <p class="text-xs" style="color: var(--text-muted)">{{ acct.name }} · ••••{{ acct.mask }}</p>
+            </div>
+            <p class="text-sm font-semibold" style="color: var(--text)">${{ fmt(acct.current_balance) }}</p>
+          </label>
+        </div>
+      </div>
+      <template #footer>
+        <Button @click="showLinkMortgage = false" label="Cancel" severity="secondary" text />
+        <Button @click="linkMortgage" label="Link & Sync" class="p-button-primary" :loading="linking" :disabled="!selectedLoanAccount" />
+      </template>
+    </Dialog>
+
     <!-- Add transaction dialog -->
     <Dialog v-model:visible="showAddTxn" header="Add Transaction" modal :style="{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)', width: '360px' }">
       <div class="space-y-3 py-2">
@@ -171,7 +218,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
@@ -191,6 +238,20 @@ const showAddTxn = ref(false)
 const savingTxn = ref(false)
 const uploadProgress = ref(0)
 const txnForm = ref({ type: 'income', amount: '', date: new Date().toISOString().slice(0,10), description: '', category: '' })
+
+// Mortgage linking
+const showLinkMortgage = ref(false)
+const loanAccounts = ref([])
+const loadingLoanAccounts = ref(false)
+const selectedLoanAccount = ref(null)
+const linking = ref(false)
+const syncing = ref(false)
+
+const linkedAccountLabel = computed(() => {
+  const acct = loanAccounts.value.find(a => a.account_id === property.value?.mortgage_account_id)
+  if (!acct) return property.value?.mortgage_account_id ? 'Synced via Plaid' : ''
+  return `${acct.institution_name} ••••${acct.mask}`
+})
 
 const fmt = (v) => v != null ? Number(v).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) : '—'
 const fmtBytes = (b) => b > 1048576 ? `${(b/1048576).toFixed(1)} MB` : `${(b/1024).toFixed(0)} KB`
@@ -261,7 +322,46 @@ const deleteDoc = async (id) => {
   docs.value = docs.value.filter(d => d.id !== id)
 }
 
+const loadLoanAccounts = async () => {
+  loadingLoanAccounts.value = true
+  try {
+    const res = await api.get('/api/properties/mortgage-accounts')
+    loanAccounts.value = res.data
+  } finally {
+    loadingLoanAccounts.value = false
+  }
+}
+
+const linkMortgage = async () => {
+  if (!selectedLoanAccount.value) return
+  linking.value = true
+  try {
+    const res = await api.post(`/api/properties/${propertyId}/link-mortgage`, { account_id: selectedLoanAccount.value })
+    property.value = res.data
+    showLinkMortgage.value = false
+    selectedLoanAccount.value = null
+  } finally { linking.value = false }
+}
+
+const unlinkMortgage = async () => {
+  if (!confirm('Unlink this mortgage account? Mortgage fields will keep their current values.')) return
+  const res = await api.delete(`/api/properties/${propertyId}/link-mortgage`)
+  property.value = res.data
+}
+
+const syncMortgage = async () => {
+  syncing.value = true
+  try {
+    const res = await api.post(`/api/properties/${propertyId}/sync-mortgage`)
+    property.value = res.data
+  } finally { syncing.value = false }
+}
+
+watch(showLinkMortgage, (open) => {
+  if (open && loanAccounts.value.length === 0) loadLoanAccounts()
+})
+
 onMounted(async () => {
-  await Promise.all([loadProperty(), loadTxns(), loadDocs()])
+  await Promise.all([loadProperty(), loadTxns(), loadDocs(), loadLoanAccounts()])
 })
 </script>

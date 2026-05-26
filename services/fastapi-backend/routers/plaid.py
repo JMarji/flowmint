@@ -15,6 +15,7 @@ from plaid.model.accounts_balance_get_request import AccountsBalanceGetRequest
 from plaid.model.transactions_sync_request import TransactionsSyncRequest
 from plaid.model.item_get_request import ItemGetRequest
 from plaid.model.institutions_get_by_id_request import InstitutionsGetByIdRequest
+from plaid.model.liabilities_get_request import LiabilitiesGetRequest
 from plaid.exceptions import ApiException
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ def create_link_token(current_user: dict = Depends(get_current_user)):
     client = pc.get_plaid_client()
     try:
         request = LinkTokenCreateRequest(
-            products=[Products("transactions")],
+            products=[Products("transactions"), Products("liabilities")],
             client_name="Flowmint",
             country_codes=[CountryCode("US")],
             language="en",
@@ -84,6 +85,9 @@ def exchange_public_token(body: ExchangeBody, current_user: dict = Depends(get_c
         # Seed initial transactions
         _sync_transactions(client, access_token, item_db_id)
 
+        # Sync liabilities for any properties already linked to accounts from this item
+        _sync_liabilities_for_item(client, access_token)
+
         return {"status": "linked", "institution": institution_name}
 
     except ApiException as e:
@@ -105,6 +109,7 @@ def sync(current_user: dict = Depends(get_current_user)):
         try:
             _sync_accounts(client, item["access_token"], item["id"])
             added = _sync_transactions(client, item["access_token"], item["id"], cursor=item["cursor"])
+            _sync_liabilities_for_item(client, item["access_token"])
             total_added += added
         except ApiException as e:
             logger.error("Sync failed for item %s: %s", item["item_id"], e)
@@ -162,6 +167,66 @@ def _sync_transactions(client, access_token: str, item_db_id: int, cursor: str =
         db_plaid.update_item_cursor(item_db_id, current_cursor)
 
     return added_total
+
+
+def fetch_mortgage_liability(client, access_token: str, account_plaid_id: str) -> dict | None:
+    """Return rate/payment/balance for a specific mortgage account, or None if unavailable."""
+    try:
+        res = client.liabilities_get(LiabilitiesGetRequest(access_token=access_token))
+        mortgages = res.liabilities.mortgage or []
+        for m in mortgages:
+            if m.account_id == account_plaid_id:
+                rate = None
+                if m.interest_rate and m.interest_rate.percentage is not None:
+                    rate = float(m.interest_rate.percentage)
+                payment = float(m.next_monthly_payment) if m.next_monthly_payment is not None else None
+                balance = float(m.origination_principal_amount) if m.origination_principal_amount is not None else None
+                return {"rate": rate, "payment": payment, "balance": balance}
+    except ApiException as e:
+        logger.warning("liabilities_get failed for account %s: %s", account_plaid_id, e)
+    return None
+
+
+def _sync_liabilities_for_item(client, access_token: str):
+    """Update mortgage fields on any properties linked to accounts from this item."""
+    from database import get_pool
+    try:
+        res = client.liabilities_get(LiabilitiesGetRequest(access_token=access_token))
+        mortgages = res.liabilities.mortgage or []
+    except ApiException:
+        return  # item may not have liabilities product enabled
+
+    for m in mortgages:
+        property_ids = db_plaid.get_properties_linked_to_account(m.account_id)
+        if not property_ids:
+            continue
+        rate = float(m.interest_rate.percentage) if (m.interest_rate and m.interest_rate.percentage is not None) else None
+        payment = float(m.next_monthly_payment) if m.next_monthly_payment is not None else None
+        # Balance comes from the account's current_balance (updated by _sync_accounts)
+        with get_pool().connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT current_balance FROM flowmint.bank_accounts WHERE account_id = %s",
+                    (m.account_id,)
+                )
+                row = cur.fetchone()
+                balance = float(row[0]) if row and row[0] is not None else None
+
+                for prop_id in property_ids:
+                    updates = {}
+                    if balance is not None:
+                        updates["mortgage_balance"] = balance
+                    if rate is not None:
+                        updates["mortgage_rate"] = rate
+                    if payment is not None:
+                        updates["mortgage_payment"] = payment
+                    if updates:
+                        cols = ", ".join(f"{k} = %s" for k in updates)
+                        cur.execute(
+                            f"UPDATE flowmint.properties SET {cols} WHERE id = %s",
+                            list(updates.values()) + [prop_id]
+                        )
+            conn.commit()
 
 
 def _plaid_txn_to_dict(t) -> dict:

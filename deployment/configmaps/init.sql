@@ -92,9 +92,12 @@ CREATE TABLE IF NOT EXISTS flowmint.properties (
     mortgage_balance NUMERIC(12,2),
     mortgage_rate NUMERIC(5,3),
     mortgage_payment NUMERIC(12,2),
+    mortgage_account_id TEXT REFERENCES flowmint.bank_accounts(account_id) ON DELETE SET NULL,
     notes TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE flowmint.properties ADD COLUMN IF NOT EXISTS mortgage_account_id TEXT REFERENCES flowmint.bank_accounts(account_id) ON DELETE SET NULL;
 
 CREATE TABLE IF NOT EXISTS flowmint.property_transactions (
     id SERIAL PRIMARY KEY,
