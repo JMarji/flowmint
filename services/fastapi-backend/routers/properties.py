@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from typing import Optional
 from database import get_pool
 from auth_routes import get_current_user
@@ -19,6 +19,13 @@ class PropertyCreate(BaseModel):
     mortgage_rate: Optional[float] = None
     mortgage_payment: Optional[float] = None
     notes: Optional[str] = None
+
+    @model_validator(mode='before')
+    @classmethod
+    def empty_str_to_none(cls, values):
+        if isinstance(values, dict):
+            return {k: (None if v == '' else v) for k, v in values.items()}
+        return values
 
 
 class PropertyUpdate(PropertyCreate):

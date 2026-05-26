@@ -162,6 +162,7 @@ const addProperty = async () => {
       mortgage_balance: numOrNull(form.value.mortgage_balance),
       mortgage_payment: numOrNull(form.value.mortgage_payment),
       mortgage_rate: numOrNull(form.value.mortgage_rate),
+      purchase_date: form.value.purchase_date || null,
     })
     showAdd.value = false
     form.value = { address: '', city: '', state: '', purchase_price: '', current_value: '', mortgage_balance: '', mortgage_payment: '', mortgage_rate: '', purchase_date: '' }
