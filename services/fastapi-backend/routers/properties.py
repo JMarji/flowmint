@@ -255,6 +255,131 @@ def sync_mortgage(property_id: int, current_user: dict = Depends(get_current_use
 
 
 # ---------------------------------------------------------------------------
+# JSON import
+# ---------------------------------------------------------------------------
+
+def _map_json_to_mortgage(data: dict) -> dict:
+    """
+    Extract mortgage fields from a servicer JSON export.
+    Handles Newrez format and generic camelCase / snake_case fallbacks.
+    Returns a dict with keys: balance, rate, payment, and optional metadata.
+    """
+    result: dict = {}
+
+    # ---- Newrez / common PascalCase servicer format ----
+    if data.get("PrincipalBalance") is not None:
+        result["balance"] = float(data["PrincipalBalance"])
+    if data.get("InterestRate") is not None:
+        r = float(data["InterestRate"])
+        result["rate"] = round(r * 100, 4) if r < 1 else r
+    for key in ("MonthlyPayment", "TotalPayment"):
+        if data.get(key) is not None:
+            result["payment"] = float(data[key])
+            break
+
+    # ---- Extra context fields (returned in summary, not persisted) ----
+    for src, dst in [
+        ("PIPayment", "pi_payment"),
+        ("EscrowPayment", "escrow_payment"),
+        ("LoanId", "loan_id"),
+        ("MaturityDate", "maturity_date"),
+        ("OriginalBalance", "original_balance"),
+        ("LastPaymentDate", "last_payment_date"),
+        ("PaymentDueDate", "payment_due_date"),
+    ]:
+        if data.get(src) is not None:
+            result[dst] = data[src]
+
+    # ---- Generic camelCase / snake_case fallbacks ----
+    if "balance" not in result:
+        for k in ("balance", "principalBalance", "principal_balance",
+                  "outstandingBalance", "outstanding_balance",
+                  "currentBalance", "current_balance", "loanBalance"):
+            if data.get(k) is not None:
+                result["balance"] = float(data[k])
+                break
+    if "rate" not in result:
+        for k in ("interestRate", "interest_rate", "rate", "apr"):
+            if data.get(k) is not None:
+                r = float(data[k])
+                result["rate"] = round(r * 100, 4) if r < 1 else r
+                break
+    if "payment" not in result:
+        for k in ("monthlyPayment", "monthly_payment", "totalPayment",
+                  "total_payment", "payment", "regularPayment"):
+            if data.get(k) is not None:
+                result["payment"] = float(data[k])
+                break
+
+    return result
+
+
+@router.post("/properties/{property_id}/import-mortgage-json")
+async def import_mortgage_json(
+    property_id: int,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Import mortgage data from a servicer JSON export (e.g. Newrez).
+    Updates mortgage_balance, mortgage_rate, and mortgage_payment.
+    """
+    if not _verify_property_csv_owner(property_id, current_user["id"]):
+        raise HTTPException(status_code=404, detail="Property not found")
+
+    contents = await file.read()
+    if len(contents) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File exceeds 5 MB limit")
+
+    try:
+        import json
+        data = json.loads(contents.decode("utf-8-sig"))
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Could not parse JSON: {e}")
+
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=422, detail="Expected a JSON object, not an array")
+
+    mapped = _map_json_to_mortgage(data)
+
+    if not any(k in mapped for k in ("balance", "rate", "payment")):
+        raise HTTPException(
+            status_code=422,
+            detail="No recognizable mortgage fields found. Expected keys like PrincipalBalance, InterestRate, MonthlyPayment."
+        )
+
+    prop_updates: dict = {}
+    if "balance" in mapped:
+        prop_updates["mortgage_balance"] = mapped["balance"]
+    if "rate" in mapped:
+        prop_updates["mortgage_rate"] = mapped["rate"]
+    if "payment" in mapped:
+        prop_updates["mortgage_payment"] = mapped["payment"]
+
+    if prop_updates:
+        cols = ", ".join(f"{k} = %s" for k in prop_updates)
+        with get_pool().connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE flowmint.properties SET {cols} WHERE id = %s AND user_id = %s",
+                    list(prop_updates.values()) + [property_id, current_user["id"]]
+                )
+                conn.commit()
+
+    summary = {k: mapped[k] for k in (
+        "balance", "rate", "payment", "pi_payment", "escrow_payment",
+        "loan_id", "original_balance", "maturity_date",
+        "last_payment_date", "payment_due_date",
+    ) if k in mapped}
+
+    return {
+        "property": get_property(property_id, current_user),
+        "fields_updated": list(prop_updates.keys()),
+        "summary": summary,
+    }
+
+
+# ---------------------------------------------------------------------------
 # CSV import
 # ---------------------------------------------------------------------------
 

@@ -36,8 +36,8 @@
               <button @click="showLinkMortgage = true" title="Link to Plaid" style="color: var(--text-muted)" class="hover:opacity-70">
                 <i class="pi pi-link text-xs"></i>
               </button>
-              <label :title="importingCsv ? 'Uploading…' : 'Import CSV'" style="color: var(--text-muted)" class="hover:opacity-70 cursor-pointer">
-                <input type="file" accept=".csv,text/csv" class="hidden" @change="handleCsvUpload" :disabled="importingCsv" />
+              <label :title="importingCsv ? 'Uploading…' : 'Import CSV or JSON'" style="color: var(--text-muted)" class="hover:opacity-70 cursor-pointer">
+                <input type="file" accept=".csv,.json,text/csv,application/json" class="hidden" @change="handleImportFile" :disabled="importingCsv" />
                 <i v-if="importingCsv" class="pi pi-spin pi-spinner text-xs"></i>
                 <i v-else class="pi pi-file-import text-xs"></i>
               </label>
@@ -151,42 +151,67 @@
       </div>
     </div>
 
-    <!-- CSV Import result dialog -->
-    <Dialog v-model:visible="showCsvResult" header="CSV Import Complete" modal :style="{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)', width: '360px' }">
+    <!-- Import result dialog -->
+    <Dialog v-model:visible="showCsvResult" :header="csvResult?.source === 'json' ? 'JSON Import Complete' : 'CSV Import Complete'" modal :style="{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)', width: '380px' }">
       <div class="py-3 space-y-3" v-if="csvResult">
-        <div class="grid grid-cols-3 gap-2 text-center">
-          <div class="rounded-lg p-3" style="background: var(--surface-2)">
-            <p class="text-lg font-bold" style="color: var(--mint)">{{ csvResult.rows_parsed }}</p>
-            <p class="text-xs mt-0.5" style="color: var(--text-muted)">Rows parsed</p>
+
+        <!-- JSON result -->
+        <template v-if="csvResult.source === 'json'">
+          <div class="space-y-2">
+            <div v-for="row in csvResult.displayRows" :key="row.label" class="flex justify-between items-center py-1.5 border-b" style="border-color: var(--border)">
+              <span class="text-xs" style="color: var(--text-muted)">{{ row.label }}</span>
+              <span class="text-sm font-medium" style="color: var(--text)">{{ row.value }}</span>
+            </div>
           </div>
-          <div class="rounded-lg p-3" style="background: var(--surface-2)">
-            <p class="text-lg font-bold" style="color: var(--mint)">{{ csvResult.imported }}</p>
-            <p class="text-xs mt-0.5" style="color: var(--text-muted)">Imported</p>
+          <p class="text-xs" style="color: var(--text-muted)">Balance, rate, and monthly payment updated from your servicer export.</p>
+        </template>
+
+        <!-- CSV result -->
+        <template v-else>
+          <div class="grid grid-cols-3 gap-2 text-center">
+            <div class="rounded-lg p-3" style="background: var(--surface-2)">
+              <p class="text-lg font-bold" style="color: var(--mint)">{{ csvResult.rows_parsed }}</p>
+              <p class="text-xs mt-0.5" style="color: var(--text-muted)">Rows parsed</p>
+            </div>
+            <div class="rounded-lg p-3" style="background: var(--surface-2)">
+              <p class="text-lg font-bold" style="color: var(--mint)">{{ csvResult.imported }}</p>
+              <p class="text-xs mt-0.5" style="color: var(--text-muted)">Imported</p>
+            </div>
+            <div class="rounded-lg p-3" style="background: var(--surface-2)">
+              <p class="text-lg font-bold" style="color: var(--text)">{{ csvResult.skipped }}</p>
+              <p class="text-xs mt-0.5" style="color: var(--text-muted)">Skipped</p>
+            </div>
           </div>
-          <div class="rounded-lg p-3" style="background: var(--surface-2)">
-            <p class="text-lg font-bold" style="color: var(--text)">{{ csvResult.skipped }}</p>
-            <p class="text-xs mt-0.5" style="color: var(--text-muted)">Skipped</p>
-          </div>
-        </div>
-        <p class="text-xs" style="color: var(--text-muted)">Mortgage balance, rate, and payment have been updated from the most recent row. Payment transactions were added to this property's history.</p>
+          <p class="text-xs" style="color: var(--text-muted)">Balance, rate, and payment updated from the most recent row. Payment transactions added to history (duplicates skipped).</p>
+        </template>
+
       </div>
       <template #footer>
         <Button @click="showCsvResult = false" label="Done" class="p-button-primary" />
       </template>
     </Dialog>
 
-    <!-- CSV format helper dialog -->
-    <Dialog v-model:visible="showCsvHelp" header="CSV Format" modal :style="{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)', width: '440px' }">
-      <div class="py-3 space-y-3">
-        <p class="text-xs" style="color: var(--text-muted)">Export your mortgage statement as CSV from your lender's portal, or create one manually. The following column names are recognized (any order, extra columns are ignored):</p>
-        <div class="rounded-lg p-3 text-xs font-mono overflow-x-auto" style="background: var(--surface-2); color: var(--text)">
-          date, balance, payment, principal, interest, rate
+    <!-- Import format helper dialog -->
+    <Dialog v-model:visible="showCsvHelp" header="Import Format" modal :style="{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)', width: '460px' }">
+      <div class="py-3 space-y-4">
+
+        <div>
+          <p class="text-xs font-semibold mb-2" style="color: var(--text)">JSON — Servicer API export (e.g. Newrez)</p>
+          <p class="text-xs mb-2" style="color: var(--text-muted)">Download the JSON response from your lender's portal or API. Recognized fields:</p>
+          <div class="rounded-lg p-3 text-xs font-mono overflow-x-auto whitespace-pre" style="background: var(--surface-2); color: var(--text)">PrincipalBalance, InterestRate, MonthlyPayment
+TotalPayment, PIPayment, EscrowPayment, LoanId</div>
+          <p class="text-xs mt-1.5" style="color: var(--text-muted)">camelCase and snake_case variants are also recognized automatically.</p>
         </div>
-        <p class="text-xs" style="color: var(--text-muted)">Example:</p>
-        <div class="rounded-lg p-3 text-xs font-mono overflow-x-auto whitespace-pre" style="background: var(--surface-2); color: var(--text)">date,balance,payment,principal,interest,rate
+
+        <div class="border-t pt-3" style="border-color: var(--border)">
+          <p class="text-xs font-semibold mb-2" style="color: var(--text)">CSV — Statement history</p>
+          <p class="text-xs mb-2" style="color: var(--text-muted)">One row per payment period. Recognized columns (extra columns ignored):</p>
+          <div class="rounded-lg p-3 text-xs font-mono overflow-x-auto whitespace-pre" style="background: var(--surface-2); color: var(--text)">date,balance,payment,principal,interest,rate
 2024-01-15,245000.00,1850.00,852.50,997.50,6.5
 2024-02-15,244147.50,1850.00,856.00,994.00,6.5</div>
-        <p class="text-xs" style="color: var(--text-muted)">Common aliases like <span style="color: var(--mint)">principal_balance</span>, <span style="color: var(--mint)">total_payment</span>, <span style="color: var(--mint)">interest_rate</span> are also accepted. Dollar signs and commas in numbers are ignored.</p>
+          <p class="text-xs mt-1.5" style="color: var(--text-muted)">Column name aliases like <span style="color:var(--mint)">principal_balance</span>, <span style="color:var(--mint)">total_payment</span>, <span style="color:var(--mint)">interest_rate</span> are accepted. $ and , in numbers are ignored.</p>
+        </div>
+
       </div>
       <template #footer>
         <Button @click="showCsvHelp = false" label="Got it" class="p-button-primary" />
@@ -413,23 +438,50 @@ const syncMortgage = async () => {
   } finally { syncing.value = false }
 }
 
-const handleCsvUpload = async (e) => {
+const fmtCurrency = (v) => v != null ? `$${Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : null
+const fmtRate = (v) => v != null ? `${Number(v).toFixed(3)}%` : null
+const fmtDate = (v) => v ? v.slice(0, 10) : null
+
+const handleImportFile = async (e) => {
   const file = e.target.files[0]
   if (!file) return
   e.target.value = ''
   importingCsv.value = true
+
+  const isJson = file.name.toLowerCase().endsWith('.json')
+  const endpoint = isJson
+    ? `/api/properties/${propertyId}/import-mortgage-json`
+    : `/api/properties/${propertyId}/import-mortgage-csv`
+
   try {
     const form = new FormData()
     form.append('file', file)
-    const res = await api.post(`/api/properties/${propertyId}/import-mortgage-csv`, form, {
-      headers: { 'Content-Type': 'multipart/form-data' }
-    })
-    csvResult.value = res.data
+    const res = await api.post(endpoint, form, { headers: { 'Content-Type': 'multipart/form-data' } })
+
+    if (isJson) {
+      const s = res.data.summary
+      const rows = [
+        { label: 'Principal Balance', value: fmtCurrency(s.balance) },
+        { label: 'Interest Rate', value: fmtRate(s.rate) },
+        { label: 'Monthly Payment', value: fmtCurrency(s.payment) },
+        s.pi_payment != null ? { label: 'P&I Payment', value: fmtCurrency(s.pi_payment) } : null,
+        s.escrow_payment != null ? { label: 'Escrow Payment', value: fmtCurrency(s.escrow_payment) } : null,
+        s.loan_id ? { label: 'Loan ID', value: s.loan_id } : null,
+        s.original_balance != null ? { label: 'Original Balance', value: fmtCurrency(s.original_balance) } : null,
+        s.maturity_date ? { label: 'Maturity Date', value: fmtDate(s.maturity_date) } : null,
+        s.last_payment_date ? { label: 'Last Payment', value: fmtDate(s.last_payment_date) } : null,
+        s.payment_due_date ? { label: 'Next Payment Due', value: fmtDate(s.payment_due_date) } : null,
+      ].filter(Boolean)
+      csvResult.value = { source: 'json', displayRows: rows }
+    } else {
+      csvResult.value = { source: 'csv', ...res.data }
+      await loadTxns()
+    }
+
     property.value = res.data.property
     showCsvResult.value = true
-    await loadTxns()
   } catch (err) {
-    const msg = err.response?.data?.detail || 'CSV import failed'
+    const msg = err.response?.data?.detail || `${isJson ? 'JSON' : 'CSV'} import failed`
     alert(msg)
   } finally {
     importingCsv.value = false
