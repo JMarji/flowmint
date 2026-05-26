@@ -65,6 +65,7 @@ const navItems = [
   { label: 'Bills',         to: '/bills',        icon: 'pi-calendar-clock' },
   { label: 'Properties',    to: '/properties',   icon: 'pi-building' },
   { label: 'Documents',     to: '/documents',    icon: 'pi-file' },
+  { label: 'Planning',      to: '/planning',     icon: 'pi-compass' },
 ]
 </script>
 

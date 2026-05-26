@@ -19,3 +19,6 @@ plaid-python>=28.0.0
 
 # Linode Object Storage (S3-compatible)
 boto3>=1.34.0
+
+# AI planning assistant
+anthropic>=0.40.0

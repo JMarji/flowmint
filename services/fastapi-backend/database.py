@@ -19,3 +19,28 @@ def init_pool():
         raise RuntimeError("DATABASE_URL not set")
     _pool = ConnectionPool(db_url, min_size=1, max_size=5, timeout=30)
     logger.info("Database pool initialized")
+
+
+def run_migrations():
+    """Idempotent: creates any tables not yet present in the live database."""
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS flowmint.plans (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES flowmint.users(id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS flowmint.plan_messages (
+                    id SERIAL PRIMARY KEY,
+                    plan_id INTEGER NOT NULL REFERENCES flowmint.plans(id) ON DELETE CASCADE,
+                    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            conn.commit()
+    logger.info("Migrations complete")

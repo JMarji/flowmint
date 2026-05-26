@@ -28,7 +28,8 @@ const router = createRouter({
         { path: 'bills', name: 'bills', component: () => import('@/views/Bills.vue') },
         { path: 'properties', name: 'properties', component: () => import('@/views/Properties.vue') },
         { path: 'properties/:id', name: 'property-detail', component: () => import('@/views/PropertyDetail.vue') },
-        { path: 'documents', name: 'documents', component: () => import('@/views/Documents.vue') }
+        { path: 'documents', name: 'documents', component: () => import('@/views/Documents.vue') },
+        { path: 'planning', name: 'planning', component: () => import('@/views/Planning.vue') }
       ]
     },
     { path: '/:pathMatch(.*)*', redirect: '/dashboard' }
