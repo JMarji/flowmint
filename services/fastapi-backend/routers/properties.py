@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel, model_validator
 from typing import Optional
 from database import get_pool
 from auth_routes import get_current_user
+import csv
+import io
 import db_plaid
 import plaid_client as pc
 from routers.plaid import fetch_mortgage_liability
@@ -250,3 +252,172 @@ def sync_mortgage(property_id: int, current_user: dict = Depends(get_current_use
                 conn.commit()
 
     return get_property(property_id, current_user)
+
+
+# ---------------------------------------------------------------------------
+# CSV import
+# ---------------------------------------------------------------------------
+
+# Column aliases: map common export header names → internal field names
+_COL_ALIASES = {
+    "balance": "balance", "principal_balance": "balance", "outstanding_balance": "balance",
+    "current_balance": "balance", "loan_balance": "balance",
+    "payment": "payment", "amount": "payment", "total_payment": "payment",
+    "monthly_payment": "payment", "payment_amount": "payment",
+    "principal": "principal", "principal_paid": "principal",
+    "interest": "interest", "interest_paid": "interest",
+    "rate": "rate", "interest_rate": "rate", "apr": "rate",
+    "date": "date", "payment_date": "date", "statement_date": "date",
+}
+
+
+def _normalize_headers(raw_headers: list) -> dict:
+    """Return mapping of original CSV header → internal field name."""
+    result = {}
+    for h in raw_headers:
+        normalized = h.strip().lower().replace(" ", "_").replace("-", "_")
+        if normalized in _COL_ALIASES:
+            result[h.strip()] = _COL_ALIASES[normalized]
+    return result
+
+
+def _parse_float(val) -> Optional[float]:
+    if not val:
+        return None
+    cleaned = str(val).strip().replace(",", "").replace("$", "").replace("%", "")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _verify_property_csv_owner(property_id: int, user_id: int) -> bool:
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM flowmint.properties WHERE id = %s AND user_id = %s",
+                (property_id, user_id)
+            )
+            return cur.fetchone() is not None
+
+
+@router.post("/properties/{property_id}/import-mortgage-csv")
+async def import_mortgage_csv(
+    property_id: int,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Import a mortgage statement CSV. Flexible column names are supported.
+
+    Recognized columns: date, balance, payment, principal, interest, rate
+
+    - Updates property mortgage_balance / mortgage_rate / mortgage_payment
+      from the most recent row.
+    - Creates a property_transaction (expense / mortgage) for each row that
+      has a payment amount, skipping dates already recorded.
+    """
+    if not _verify_property_csv_owner(property_id, current_user["id"]):
+        raise HTTPException(status_code=404, detail="Property not found")
+
+    contents = await file.read()
+    if len(contents) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File exceeds 5 MB limit")
+
+    try:
+        text = contents.decode("utf-8-sig")  # handles BOM from Excel exports
+        reader = csv.DictReader(io.StringIO(text))
+        if reader.fieldnames is None:
+            raise HTTPException(status_code=422, detail="CSV has no headers")
+
+        col_map = _normalize_headers(list(reader.fieldnames))
+        if "date" not in col_map.values():
+            raise HTTPException(status_code=422, detail="CSV must have a 'date' column")
+        if "balance" not in col_map.values():
+            raise HTTPException(status_code=422, detail="CSV must have a 'balance' column")
+
+        rows = []
+        for raw in reader:
+            mapped: dict = {}
+            for raw_col, field in col_map.items():
+                mapped[field] = raw.get(raw_col, "").strip()
+            if mapped.get("date"):
+                rows.append(mapped)
+
+    except (UnicodeDecodeError, csv.Error) as e:
+        raise HTTPException(status_code=422, detail=f"Could not parse CSV: {e}")
+
+    if not rows:
+        raise HTTPException(status_code=422, detail="CSV contains no data rows")
+
+    rows.sort(key=lambda r: r.get("date", ""))
+    latest = rows[-1]
+
+    # Update property fields from most recent row
+    prop_updates: dict = {}
+    balance = _parse_float(latest.get("balance"))
+    rate = _parse_float(latest.get("rate"))
+    payment = _parse_float(latest.get("payment"))
+    if balance is not None:
+        prop_updates["mortgage_balance"] = balance
+    if rate is not None:
+        prop_updates["mortgage_rate"] = rate
+    if payment is not None:
+        prop_updates["mortgage_payment"] = payment
+
+    if prop_updates:
+        cols = ", ".join(f"{k} = %s" for k in prop_updates)
+        with get_pool().connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE flowmint.properties SET {cols} WHERE id = %s AND user_id = %s",
+                    list(prop_updates.values()) + [property_id, current_user["id"]]
+                )
+                conn.commit()
+
+    # Import payment transactions, skipping already-recorded dates
+    imported = 0
+    skipped = 0
+
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT date FROM flowmint.property_transactions
+                   WHERE property_id = %s AND category = 'mortgage' AND type = 'expense'""",
+                (property_id,)
+            )
+            existing_dates = {str(r[0]) for r in cur.fetchall()}
+
+            for row in rows:
+                pmt = _parse_float(row.get("payment"))
+                date_str = row.get("date", "").strip()
+                if not pmt or not date_str:
+                    continue
+                if date_str in existing_dates:
+                    skipped += 1
+                    continue
+
+                principal = _parse_float(row.get("principal"))
+                interest = _parse_float(row.get("interest"))
+                if principal is not None and interest is not None:
+                    desc = f"Principal ${principal:,.2f} · Interest ${interest:,.2f}"
+                else:
+                    desc = None
+
+                cur.execute(
+                    """INSERT INTO flowmint.property_transactions
+                           (property_id, type, amount, date, category, description)
+                       VALUES (%s, 'expense', %s, %s, 'mortgage', %s)""",
+                    (property_id, pmt, date_str, desc)
+                )
+                existing_dates.add(date_str)
+                imported += 1
+
+            conn.commit()
+
+    return {
+        "property": get_property(property_id, current_user),
+        "imported": imported,
+        "skipped": skipped,
+        "rows_parsed": len(rows),
+    }

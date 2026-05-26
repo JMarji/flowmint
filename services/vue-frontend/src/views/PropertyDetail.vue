@@ -32,9 +32,19 @@
             <button v-if="property.mortgage_account_id" @click="unlinkMortgage" title="Unlink" style="color: var(--text-muted)" class="hover:opacity-70">
               <i class="pi pi-times text-xs"></i>
             </button>
-            <button v-else @click="showLinkMortgage = true" title="Link to Plaid" style="color: var(--text-muted)" class="hover:opacity-70">
-              <i class="pi pi-link text-xs"></i>
-            </button>
+            <template v-else>
+              <button @click="showLinkMortgage = true" title="Link to Plaid" style="color: var(--text-muted)" class="hover:opacity-70">
+                <i class="pi pi-link text-xs"></i>
+              </button>
+              <label :title="importingCsv ? 'Uploading…' : 'Import CSV'" style="color: var(--text-muted)" class="hover:opacity-70 cursor-pointer">
+                <input type="file" accept=".csv,text/csv" class="hidden" @change="handleCsvUpload" :disabled="importingCsv" />
+                <i v-if="importingCsv" class="pi pi-spin pi-spinner text-xs"></i>
+                <i v-else class="pi pi-file-import text-xs"></i>
+              </label>
+              <button @click="showCsvHelp = true" title="CSV format help" style="color: var(--text-muted)" class="hover:opacity-70">
+                <i class="pi pi-question-circle text-xs"></i>
+              </button>
+            </template>
           </div>
         </div>
         <p class="text-lg font-bold" style="color: var(--text)">${{ fmt(property.mortgage_balance) }}</p>
@@ -141,6 +151,48 @@
       </div>
     </div>
 
+    <!-- CSV Import result dialog -->
+    <Dialog v-model:visible="showCsvResult" header="CSV Import Complete" modal :style="{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)', width: '360px' }">
+      <div class="py-3 space-y-3" v-if="csvResult">
+        <div class="grid grid-cols-3 gap-2 text-center">
+          <div class="rounded-lg p-3" style="background: var(--surface-2)">
+            <p class="text-lg font-bold" style="color: var(--mint)">{{ csvResult.rows_parsed }}</p>
+            <p class="text-xs mt-0.5" style="color: var(--text-muted)">Rows parsed</p>
+          </div>
+          <div class="rounded-lg p-3" style="background: var(--surface-2)">
+            <p class="text-lg font-bold" style="color: var(--mint)">{{ csvResult.imported }}</p>
+            <p class="text-xs mt-0.5" style="color: var(--text-muted)">Imported</p>
+          </div>
+          <div class="rounded-lg p-3" style="background: var(--surface-2)">
+            <p class="text-lg font-bold" style="color: var(--text)">{{ csvResult.skipped }}</p>
+            <p class="text-xs mt-0.5" style="color: var(--text-muted)">Skipped</p>
+          </div>
+        </div>
+        <p class="text-xs" style="color: var(--text-muted)">Mortgage balance, rate, and payment have been updated from the most recent row. Payment transactions were added to this property's history.</p>
+      </div>
+      <template #footer>
+        <Button @click="showCsvResult = false" label="Done" class="p-button-primary" />
+      </template>
+    </Dialog>
+
+    <!-- CSV format helper dialog -->
+    <Dialog v-model:visible="showCsvHelp" header="CSV Format" modal :style="{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)', width: '440px' }">
+      <div class="py-3 space-y-3">
+        <p class="text-xs" style="color: var(--text-muted)">Export your mortgage statement as CSV from your lender's portal, or create one manually. The following column names are recognized (any order, extra columns are ignored):</p>
+        <div class="rounded-lg p-3 text-xs font-mono overflow-x-auto" style="background: var(--surface-2); color: var(--text)">
+          date, balance, payment, principal, interest, rate
+        </div>
+        <p class="text-xs" style="color: var(--text-muted)">Example:</p>
+        <div class="rounded-lg p-3 text-xs font-mono overflow-x-auto whitespace-pre" style="background: var(--surface-2); color: var(--text)">date,balance,payment,principal,interest,rate
+2024-01-15,245000.00,1850.00,852.50,997.50,6.5
+2024-02-15,244147.50,1850.00,856.00,994.00,6.5</div>
+        <p class="text-xs" style="color: var(--text-muted)">Common aliases like <span style="color: var(--mint)">principal_balance</span>, <span style="color: var(--mint)">total_payment</span>, <span style="color: var(--mint)">interest_rate</span> are also accepted. Dollar signs and commas in numbers are ignored.</p>
+      </div>
+      <template #footer>
+        <Button @click="showCsvHelp = false" label="Got it" class="p-button-primary" />
+      </template>
+    </Dialog>
+
     <!-- Link Mortgage dialog -->
     <Dialog v-model:visible="showLinkMortgage" header="Link Mortgage Account" modal :style="{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)', width: '400px' }">
       <div class="py-2">
@@ -239,13 +291,17 @@ const savingTxn = ref(false)
 const uploadProgress = ref(0)
 const txnForm = ref({ type: 'income', amount: '', date: new Date().toISOString().slice(0,10), description: '', category: '' })
 
-// Mortgage linking
+// Mortgage linking & CSV import
 const showLinkMortgage = ref(false)
 const loanAccounts = ref([])
 const loadingLoanAccounts = ref(false)
 const selectedLoanAccount = ref(null)
 const linking = ref(false)
 const syncing = ref(false)
+const importingCsv = ref(false)
+const showCsvResult = ref(false)
+const showCsvHelp = ref(false)
+const csvResult = ref(null)
 
 const linkedAccountLabel = computed(() => {
   const acct = loanAccounts.value.find(a => a.account_id === property.value?.mortgage_account_id)
@@ -355,6 +411,29 @@ const syncMortgage = async () => {
     const res = await api.post(`/api/properties/${propertyId}/sync-mortgage`)
     property.value = res.data
   } finally { syncing.value = false }
+}
+
+const handleCsvUpload = async (e) => {
+  const file = e.target.files[0]
+  if (!file) return
+  e.target.value = ''
+  importingCsv.value = true
+  try {
+    const form = new FormData()
+    form.append('file', file)
+    const res = await api.post(`/api/properties/${propertyId}/import-mortgage-csv`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    csvResult.value = res.data
+    property.value = res.data.property
+    showCsvResult.value = true
+    await loadTxns()
+  } catch (err) {
+    const msg = err.response?.data?.detail || 'CSV import failed'
+    alert(msg)
+  } finally {
+    importingCsv.value = false
+  }
 }
 
 watch(showLinkMortgage, (open) => {
