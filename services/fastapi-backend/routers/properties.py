@@ -59,8 +59,69 @@ _SELECT = """SELECT id, address, city, state, zip, purchase_price, current_value
                     notes, created_at, mortgage_account_id"""
 
 
+def _default_property_address_for_account(acct: dict) -> str:
+    institution = (acct.get("institution_name") or "").strip()
+    name = (acct.get("name") or "").strip()
+    mask = (acct.get("mask") or "").strip()
+
+    if institution and mask:
+        return f"{institution} ****{mask}"
+    if institution and name:
+        return f"{institution} - {name}"
+    if name and mask:
+        return f"{name} ****{mask}"
+    if name:
+        return name
+    if institution:
+        return institution
+    return "Connected Mortgage"
+
+
+def _ensure_connected_mortgage_properties(user_id: int):
+    loan_accounts = db_plaid.get_loan_accounts_for_user(user_id)
+    if not loan_accounts:
+        return
+
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            for acct in loan_accounts:
+                account_id = acct.get("account_id")
+                if not account_id:
+                    continue
+
+                balance = acct.get("current_balance")
+                address = _default_property_address_for_account(acct)
+                notes = f"Auto-created from connected mortgage account {account_id}"
+
+                # Avoid duplicates when this account is already represented as a property.
+                cur.execute(
+                    """INSERT INTO flowmint.properties
+                           (user_id, address, city, state, zip, purchase_price, current_value,
+                            purchase_date, mortgage_balance, mortgage_rate, mortgage_payment,
+                            notes, mortgage_account_id)
+                       SELECT %s,%s,NULL,NULL,NULL,NULL,%s,NULL,%s,NULL,NULL,%s,%s
+                       WHERE NOT EXISTS (
+                           SELECT 1 FROM flowmint.properties
+                           WHERE user_id = %s AND mortgage_account_id = %s
+                       )""",
+                    (
+                        user_id,
+                        address,
+                        balance,
+                        balance,
+                        notes,
+                        account_id,
+                        user_id,
+                        account_id,
+                    )
+                )
+            conn.commit()
+
+
 @router.get("/properties")
 def list_properties(current_user: dict = Depends(get_current_user)):
+    _ensure_connected_mortgage_properties(current_user["id"])
+
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
