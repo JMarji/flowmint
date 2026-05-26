@@ -5,7 +5,11 @@
         <h1 class="text-2xl font-bold" style="color: var(--text)">Properties</h1>
         <p class="text-sm mt-1" style="color: var(--text-muted)">Real estate portfolio · ${{ fmt(totalEquity) }} total equity</p>
       </div>
-      <Button @click="showAdd = true" label="Add Property" icon="pi pi-plus" class="p-button-primary" />
+      <div class="flex items-center gap-2">
+        <input ref="jsonImportInput" type="file" accept=".json,application/json" class="hidden" @change="importPropertyJson" :disabled="importingJson" />
+        <Button @click="openJsonImporter" :label="importingJson ? 'Importing…' : 'Import JSON'" icon="pi pi-file-import" severity="secondary" outlined :loading="importingJson" :disabled="importingJson" />
+        <Button @click="showAdd = true" label="Add Property" icon="pi pi-plus" class="p-button-primary" />
+      </div>
     </div>
 
     <!-- Portfolio summary -->
@@ -29,7 +33,10 @@
       <i class="pi pi-building text-3xl" style="color: var(--mint)"></i>
       <p class="text-sm font-medium" style="color: var(--text)">No properties added</p>
       <p class="text-xs" style="color: var(--text-muted)">Add your real estate investments to track equity and cash flow</p>
-      <Button @click="showAdd = true" label="Add first property" class="p-button-primary mt-1" size="small" />
+      <div class="flex items-center gap-2 mt-1">
+        <Button @click="showAdd = true" label="Add first property" class="p-button-primary" size="small" />
+        <Button @click="openJsonImporter" label="Import JSON" icon="pi pi-file-import" severity="secondary" outlined size="small" :loading="importingJson" :disabled="importingJson" />
+      </div>
     </div>
 
     <!-- Property grid -->
@@ -136,6 +143,8 @@ const properties = ref([])
 const loading = ref(true)
 const showAdd = ref(false)
 const saving = ref(false)
+const importingJson = ref(false)
+const jsonImportInput = ref(null)
 const form = ref({ address: '', city: '', state: '', purchase_price: '', current_value: '', mortgage_balance: '', mortgage_payment: '', mortgage_rate: '', purchase_date: '' })
 
 const totalValue = computed(() => properties.value.reduce((s, p) => s + (p.current_value || 0), 0))
@@ -168,6 +177,30 @@ const addProperty = async () => {
     form.value = { address: '', city: '', state: '', purchase_price: '', current_value: '', mortgage_balance: '', mortgage_payment: '', mortgage_rate: '', purchase_date: '' }
     await load()
   } finally { saving.value = false }
+}
+
+const openJsonImporter = () => {
+  jsonImportInput.value?.click()
+}
+
+const importPropertyJson = async (e) => {
+  const file = e.target.files[0]
+  if (!file) return
+  e.target.value = ''
+  importingJson.value = true
+
+  try {
+    const formData = new FormData()
+    formData.append('file', file)
+    await api.post('/api/properties/import-json', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    await load()
+  } catch (err) {
+    alert(err.response?.data?.detail || 'JSON import failed')
+  } finally {
+    importingJson.value = false
+  }
 }
 
 const deleteProperty = async (id) => {

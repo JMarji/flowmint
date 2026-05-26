@@ -3,6 +3,7 @@ from pydantic import BaseModel, model_validator
 from typing import Optional
 from database import get_pool
 from auth_routes import get_current_user
+import json
 import csv
 import io
 import db_plaid
@@ -89,6 +90,162 @@ def create_property(body: PropertyCreate, current_user: dict = Depends(get_curre
             row = cur.fetchone()
             conn.commit()
     return _row_to_property(row)
+
+
+def _coalesce(*vals):
+    for v in vals:
+        if v is None:
+            continue
+        if isinstance(v, str):
+            s = v.strip()
+            if s:
+                return s
+            continue
+        return v
+    return None
+
+
+def _extract_property_address(data: dict) -> dict:
+    """
+    Extract a property address from common servicer JSON formats.
+    Supports Newrez PropertyAddress plus generic camel/snake-case keys.
+    """
+    addr_obj = data.get("PropertyAddress")
+    if not isinstance(addr_obj, dict):
+        addr_obj = data.get("propertyAddress")
+    if not isinstance(addr_obj, dict):
+        addr_obj = {}
+
+    address1 = _coalesce(
+        addr_obj.get("Address1"),
+        addr_obj.get("address1"),
+        data.get("Address1"),
+        data.get("address1"),
+        data.get("streetAddress"),
+        data.get("street_address"),
+        data.get("address"),
+    )
+    address2 = _coalesce(
+        addr_obj.get("Address2"),
+        addr_obj.get("address2"),
+        data.get("Address2"),
+        data.get("address2"),
+    )
+
+    address = None
+    if address1 and address2:
+        address = f"{address1} {address2}".strip()
+    else:
+        address = _coalesce(address1, address2)
+
+    city = _coalesce(
+        addr_obj.get("City"),
+        addr_obj.get("city"),
+        data.get("city"),
+        data.get("City"),
+    )
+    state = _coalesce(
+        addr_obj.get("StateId"),
+        addr_obj.get("stateId"),
+        addr_obj.get("state"),
+        data.get("state"),
+        data.get("State"),
+        data.get("stateId"),
+    )
+    zip_code = _coalesce(
+        addr_obj.get("ZipCode"),
+        addr_obj.get("zipCode"),
+        addr_obj.get("zip"),
+        data.get("zip"),
+        data.get("Zip"),
+        data.get("postalCode"),
+        data.get("postal_code"),
+    )
+
+    return {
+        "address": address,
+        "city": city,
+        "state": state,
+        "zip": zip_code,
+    }
+
+
+async def _read_json_object_upload(file: UploadFile) -> dict:
+    contents = await file.read()
+    if len(contents) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File exceeds 5 MB limit")
+
+    try:
+        data = json.loads(contents.decode("utf-8-sig"))
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Could not parse JSON: {e}")
+
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=422, detail="Expected a JSON object, not an array")
+    return data
+
+
+@router.post("/properties/import-json", status_code=201)
+async def create_property_from_json(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Create a property from a mortgage servicer JSON export.
+    Address details are extracted when available; mortgage fields are mapped.
+    """
+    data = await _read_json_object_upload(file)
+    address_data = _extract_property_address(data)
+
+    if not address_data["address"]:
+        raise HTTPException(
+            status_code=422,
+            detail="Could not determine property address. Expected PropertyAddress.Address1 or a top-level address field."
+        )
+
+    mapped = _map_json_to_mortgage(data)
+
+    notes = None
+    if data.get("LoanId"):
+        notes = f"Imported from JSON (LoanId: {data['LoanId']})"
+
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO flowmint.properties
+                       (user_id, address, city, state, zip, purchase_price, current_value,
+                        purchase_date, mortgage_balance, mortgage_rate, mortgage_payment, notes)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   RETURNING id, address, city, state, zip, purchase_price, current_value,
+                             purchase_date, mortgage_balance, mortgage_rate, mortgage_payment,
+                             notes, created_at, mortgage_account_id""",
+                (
+                    current_user["id"],
+                    address_data["address"],
+                    address_data["city"],
+                    address_data["state"],
+                    address_data["zip"],
+                    None,
+                    None,
+                    None,
+                    mapped.get("balance"),
+                    mapped.get("rate"),
+                    mapped.get("payment"),
+                    notes,
+                )
+            )
+            row = cur.fetchone()
+            conn.commit()
+
+    summary = {
+        "source_file": file.filename,
+        "address": address_data,
+        "mortgage_fields_imported": [
+            k for k in ("balance", "rate", "payment") if mapped.get(k) is not None
+        ],
+    }
+
+    return {"property": _row_to_property(row), "summary": summary}
 
 
 @router.get("/properties/{property_id}")
@@ -327,18 +484,7 @@ async def import_mortgage_json(
     if not _verify_property_csv_owner(property_id, current_user["id"]):
         raise HTTPException(status_code=404, detail="Property not found")
 
-    contents = await file.read()
-    if len(contents) > 5 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File exceeds 5 MB limit")
-
-    try:
-        import json
-        data = json.loads(contents.decode("utf-8-sig"))
-    except Exception as e:
-        raise HTTPException(status_code=422, detail=f"Could not parse JSON: {e}")
-
-    if not isinstance(data, dict):
-        raise HTTPException(status_code=422, detail="Expected a JSON object, not an array")
+    data = await _read_json_object_upload(file)
 
     mapped = _map_json_to_mortgage(data)
 
