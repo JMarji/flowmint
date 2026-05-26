@@ -20,3 +20,5 @@ dist/
 
 # Secrets — never commit real values
 deployment/secrets.yaml
+
+newrez_loan.json

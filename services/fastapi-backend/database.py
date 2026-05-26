@@ -42,5 +42,10 @@ def run_migrations():
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
+            cur.execute("""
+                ALTER TABLE flowmint.properties
+                ADD COLUMN IF NOT EXISTS mortgage_account_id TEXT
+                REFERENCES flowmint.bank_accounts(account_id) ON DELETE SET NULL
+            """)
             conn.commit()
     logger.info("Migrations complete")
