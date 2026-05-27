@@ -85,6 +85,7 @@ import { ref, onMounted } from 'vue'
 import InputText from 'primevue/inputtext'
 import Button from 'primevue/button'
 import api from '@/utils/api'
+import { usePlaidSync } from '@/composables/usePlaidSync'
 
 const CATEGORIES = [
   { value: 'FOOD_AND_DRINK', label: 'Food & Drink' },
@@ -109,6 +110,7 @@ const endDate = ref('')
 const limit = ref(50)
 const offset = ref(0)
 let searchTimer = null
+const { syncIfStale } = usePlaidSync()
 
 const load = async () => {
   loading.value = true
@@ -158,5 +160,10 @@ const categoryIcon = (c) => {
   return map[c] || 'pi-receipt'
 }
 
-onMounted(load)
+onMounted(async () => {
+  try {
+    await syncIfStale({ maxAgeMs: 3 * 60_000 })
+  } catch (e) {}
+  await load()
+})
 </script>

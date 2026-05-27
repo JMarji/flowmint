@@ -16,8 +16,14 @@ export function usePlaid() {
       const handler = window.Plaid.create({
         token: linkToken,
         onSuccess: async (publicToken, metadata) => {
-          await api.post('/api/plaid/exchange', { public_token: publicToken })
-          if (onSuccess) onSuccess(metadata)
+          try {
+            await api.post('/api/plaid/exchange', { public_token: publicToken })
+            if (onSuccess) await onSuccess(metadata)
+          } catch (e) {
+            error.value = e?.response?.data?.detail || e?.message || 'Failed to link bank account'
+          } finally {
+            isLinking.value = false
+          }
         },
         onExit: (err) => {
           if (err) error.value = err.display_message || 'Bank linking cancelled'

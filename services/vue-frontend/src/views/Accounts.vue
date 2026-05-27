@@ -83,16 +83,18 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import Button from 'primevue/button'
 import api from '@/utils/api'
 import { usePlaid } from '@/composables/usePlaid'
+import { usePlaidSync } from '@/composables/usePlaidSync'
 
 const accounts = ref([])
 const loading = ref(true)
 const syncing = ref(false)
 const error = ref('')
 const { isLinking, openLink } = usePlaid()
+const { syncNow, syncIfStale } = usePlaidSync()
 
 const grouped = computed(() => {
   const g = {}
@@ -194,7 +196,7 @@ const syncAccounts = async () => {
   syncing.value = true
   error.value = ''
   try {
-    await api.post('/api/plaid/sync')
+    await syncNow({ force: true })
     await fetchAccounts()
   } catch (e) {
     error.value = 'Sync failed'
@@ -203,12 +205,37 @@ const syncAccounts = async () => {
   }
 }
 
+const maybeAutoSync = async (maxAgeMs = 2 * 60_000) => {
+  try {
+    const result = await syncIfStale({ maxAgeMs })
+    return !result.skipped
+  } catch {
+    return false
+  }
+}
+
+const handleVisibilityChange = async () => {
+  if (document.visibilityState !== 'visible') return
+  const synced = await maybeAutoSync(60_000)
+  if (synced) await fetchAccounts()
+}
+
 const openPlaidLink = () => {
   openLink(async () => {
     loading.value = true
+    await syncNow({ force: true })
     await fetchAccounts()
   })
 }
 
-onMounted(fetchAccounts)
+onMounted(async () => {
+  loading.value = true
+  await maybeAutoSync()
+  await fetchAccounts()
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+})
 </script>
