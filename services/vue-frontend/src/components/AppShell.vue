@@ -89,6 +89,7 @@ onMounted(async () => {
 const navItems = [
   { label: 'Dashboard',     to: '/dashboard',    icon: 'pi-home' },
   { label: 'Accounts',      to: '/accounts',     icon: 'pi-building-columns' },
+  { label: 'Debt Tracker',  to: '/debt',         icon: 'pi-percentage' },
   { label: 'Transactions',  to: '/transactions', icon: 'pi-receipt' },
   { label: 'Budget',        to: '/budget',       icon: 'pi-chart-pie' },
   { label: 'Bills',         to: '/bills',        icon: 'pi-calendar-clock' },
