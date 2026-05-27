@@ -297,6 +297,7 @@ def get_transactions_for_user(
     user_id: int,
     limit: int = 50,
     offset: int = 0,
+    account_id: Optional[int] = None,
     category: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -306,6 +307,9 @@ def get_transactions_for_user(
     ]
     params: list = [user_id]
 
+    if account_id:
+        conditions.append("ba.id = %s")
+        params.append(account_id)
     if category:
         conditions.append("(t.category_override = %s OR (t.category_override IS NULL AND t.category_primary = %s))")
         params.extend([category, category])

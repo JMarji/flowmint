@@ -8,12 +8,18 @@
     <!-- Filters -->
     <div class="flex gap-3 mb-5 flex-wrap">
       <InputText v-model="search" placeholder="Search..." class="flex-1 min-w-40" @input="debounceSearch" />
-      <select v-model="categoryFilter" @change="load" class="px-3 py-2 rounded-lg text-sm" style="background: var(--surface-2); border: 1px solid var(--border); color: var(--text)">
+      <select v-model="accountFilter" @change="applyFilters" class="px-3 py-2 rounded-lg text-sm" style="background: var(--surface-2); border: 1px solid var(--border); color: var(--text)">
+        <option value="">All accounts</option>
+        <option v-for="acct in accountOptions" :key="acct.id" :value="String(acct.id)">
+          {{ acct.institution_name }} · {{ acct.name }}
+        </option>
+      </select>
+      <select v-model="categoryFilter" @change="applyFilters" class="px-3 py-2 rounded-lg text-sm" style="background: var(--surface-2); border: 1px solid var(--border); color: var(--text)">
         <option value="">All categories</option>
         <option v-for="cat in CATEGORIES" :key="cat.value" :value="cat.value">{{ cat.label }}</option>
       </select>
-      <input type="date" v-model="startDate" @change="load" class="px-3 py-2 rounded-lg text-sm" style="background: var(--surface-2); border: 1px solid var(--border); color: var(--text)" />
-      <input type="date" v-model="endDate" @change="load" class="px-3 py-2 rounded-lg text-sm" style="background: var(--surface-2); border: 1px solid var(--border); color: var(--text)" />
+      <input type="date" v-model="startDate" @change="applyFilters" class="px-3 py-2 rounded-lg text-sm" style="background: var(--surface-2); border: 1px solid var(--border); color: var(--text)" />
+      <input type="date" v-model="endDate" @change="applyFilters" class="px-3 py-2 rounded-lg text-sm" style="background: var(--surface-2); border: 1px solid var(--border); color: var(--text)" />
     </div>
 
     <!-- Loading skeleton -->
@@ -104,6 +110,8 @@ const transactions = ref([])
 const total = ref(0)
 const loading = ref(true)
 const search = ref('')
+const accountFilter = ref('')
+const accountOptions = ref([])
 const categoryFilter = ref('')
 const startDate = ref('')
 const endDate = ref('')
@@ -119,6 +127,7 @@ const load = async () => {
       limit: limit.value,
       offset: offset.value,
     })
+    if (accountFilter.value) params.set('account_id', accountFilter.value)
     if (categoryFilter.value) params.set('category', categoryFilter.value)
     if (startDate.value) params.set('start_date', startDate.value)
     if (endDate.value) params.set('end_date', endDate.value)
@@ -140,7 +149,24 @@ const load = async () => {
 
 const debounceSearch = () => {
   clearTimeout(searchTimer)
-  searchTimer = setTimeout(load, 300)
+  searchTimer = setTimeout(() => {
+    offset.value = 0
+    load()
+  }, 300)
+}
+
+const applyFilters = () => {
+  offset.value = 0
+  load()
+}
+
+const loadAccounts = async () => {
+  try {
+    const res = await api.get('/api/accounts')
+    accountOptions.value = (res.data || []).filter(a => Number.isInteger(a.id) && a.item_db_id !== null)
+  } catch (e) {
+    accountOptions.value = []
+  }
 }
 
 const prevPage = () => { offset.value = Math.max(0, offset.value - limit.value); load() }
@@ -164,6 +190,7 @@ onMounted(async () => {
   try {
     await syncIfStale({ maxAgeMs: 3 * 60_000 })
   } catch (e) {}
+  await loadAccounts()
   await load()
 })
 </script>

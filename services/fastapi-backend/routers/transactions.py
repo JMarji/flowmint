@@ -15,6 +15,7 @@ class CategoryOverride(BaseModel):
 def list_transactions(
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
+    account_id: Optional[int] = Query(None, ge=1),
     category: Optional[str] = Query(None),
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
@@ -25,6 +26,7 @@ def list_transactions(
         user_id=current_user["id"],
         limit=limit,
         offset=offset,
+        account_id=account_id,
         category=category,
         start_date=start_date,
         end_date=end_date,
