@@ -14,12 +14,27 @@
     <!-- Stats -->
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8" v-if="property">
       <div class="rounded-xl border p-4" style="background: var(--surface); border-color: var(--mint)">
-        <p class="text-xs mb-1" style="color: var(--text-muted)">Current Value</p>
-        <p class="text-lg font-bold" style="color: var(--mint)">${{ fmt(property.current_value) }}</p>
+        <div class="flex items-center justify-between mb-1">
+          <p class="text-xs" style="color: var(--text-muted)">Current Value</p>
+          <span v-if="!hasManualCurrentValue" class="text-[10px] px-1.5 py-0.5 rounded" style="background: rgba(96,165,250,0.15); color: #60a5fa">Estimated</span>
+        </div>
+        <p class="text-lg font-bold" style="color: var(--mint)">${{ fmt(displayCurrentValue) }}</p>
+        <p v-if="!hasManualCurrentValue && analytics?.current?.market_estimate" class="text-[11px] mt-1" style="color: var(--text-muted)">
+          Market proxy: ${{ fmt(analytics.current.market_estimate) }} · Improvements: ${{ fmt(analytics.current.improvement_spend) }}
+        </p>
+        <button
+          v-if="!hasManualCurrentValue && analytics?.current?.effective_current_value"
+          @click="applyEstimatedValue"
+          :disabled="applyingEstimate"
+          class="mt-2 text-[11px] px-2 py-1 rounded hover:opacity-80 disabled:opacity-40"
+          style="background: var(--surface-2); color: var(--text-muted)"
+        >
+          {{ applyingEstimate ? 'Applying…' : 'Use as current value' }}
+        </button>
       </div>
       <div class="rounded-xl border p-4" style="background: var(--surface); border-color: var(--border)">
         <p class="text-xs mb-1" style="color: var(--text-muted)">Equity</p>
-        <p class="text-lg font-bold" style="color: var(--text)">${{ fmt(property.equity) }}</p>
+        <p class="text-lg font-bold" style="color: var(--text)">${{ fmt(displayEquity) }}</p>
       </div>
       <div class="rounded-xl border p-4" style="background: var(--surface); border-color: var(--border)">
         <div class="flex items-center justify-between mb-1">
@@ -53,6 +68,29 @@
       <div class="rounded-xl border p-4" style="background: var(--surface); border-color: var(--border)">
         <p class="text-xs mb-1" style="color: var(--text-muted)">Monthly Payment</p>
         <p class="text-lg font-bold" style="color: var(--text)">${{ fmt(property.mortgage_payment) }}</p>
+      </div>
+    </div>
+
+    <!-- Debt + Equity trend -->
+    <div class="rounded-xl border p-4 mb-8" style="background: var(--surface); border-color: var(--border)">
+      <div class="flex items-center justify-between mb-3">
+        <div>
+          <p class="text-sm font-semibold" style="color: var(--text)">Debt & Equity Over Time</p>
+          <p class="text-xs mt-0.5" style="color: var(--text-muted)">Debt line uses mortgage history imports + linked balance. Equity line uses value estimate and disclosed improvements.</p>
+        </div>
+        <select v-model.number="historyMonths" class="px-2 py-1.5 rounded-lg text-xs" style="background: var(--surface-2); border: 1px solid var(--border); color: var(--text)">
+          <option :value="12">12 months</option>
+          <option :value="24">24 months</option>
+          <option :value="36">36 months</option>
+        </select>
+      </div>
+
+      <div v-if="loadingAnalytics" class="h-72 rounded animate-pulse" style="background: var(--surface-2)"></div>
+      <div v-else-if="debtEquityChartData.labels.length" class="h-72">
+        <Line :data="debtEquityChartData" :options="lineChartOptions" />
+      </div>
+      <div v-else class="h-72 rounded-lg border flex items-center justify-center text-xs" style="border-color: var(--border); color: var(--text-muted)">
+        No history yet. Import mortgage CSV or add mortgage/improvement transactions to build trend data.
       </div>
     </div>
 
@@ -278,6 +316,7 @@ TotalPayment, PIPayment, EscrowPayment, LoanId</div>
             <option value="">None</option>
             <option value="rent">Rent</option>
             <option value="mortgage">Mortgage Payment</option>
+            <option value="improvement">Improvement</option>
             <option value="maintenance">Maintenance</option>
             <option value="insurance">Insurance</option>
             <option value="taxes">Property Taxes</option>
@@ -301,11 +340,27 @@ import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import api from '@/utils/api'
+import { Line } from 'vue-chartjs'
+import {
+  Chart as ChartJS,
+  LineElement,
+  PointElement,
+  CategoryScale,
+  LinearScale,
+  Tooltip,
+  Legend,
+} from 'chart.js'
+
+ChartJS.register(LineElement, PointElement, CategoryScale, LinearScale, Tooltip, Legend)
 
 const route = useRoute()
 const propertyId = route.params.id
 
 const property = ref(null)
+const analytics = ref(null)
+const loadingAnalytics = ref(true)
+const applyingEstimate = ref(false)
+const historyMonths = ref(24)
 const transactions = ref([])
 const txnSummary = ref(null)
 const docs = ref([])
@@ -334,12 +389,89 @@ const linkedAccountLabel = computed(() => {
   return `${acct.institution_name} ••••${acct.mask}`
 })
 
+const hasManualCurrentValue = computed(() => property.value?.current_value != null)
+const displayCurrentValue = computed(() => {
+  if (property.value?.current_value != null) return property.value.current_value
+  return analytics.value?.current?.effective_current_value ?? null
+})
+const displayEquity = computed(() => {
+  if (property.value?.current_value != null && property.value?.mortgage_balance != null) {
+    return Number(property.value.current_value || 0) - Number(property.value.mortgage_balance || 0)
+  }
+  return analytics.value?.current?.equity ?? property.value?.equity ?? null
+})
+
+const debtEquityChartData = computed(() => {
+  const points = analytics.value?.history || []
+  return {
+    labels: points.map(p => p.month),
+    datasets: [
+      {
+        label: 'Debt',
+        data: points.map(p => p.debt),
+        borderColor: '#f87171',
+        backgroundColor: 'rgba(248,113,113,0.2)',
+        pointRadius: 2,
+        tension: 0.25,
+      },
+      {
+        label: 'Equity',
+        data: points.map(p => p.equity),
+        borderColor: '#3DDBB8',
+        backgroundColor: 'rgba(61,219,184,0.18)',
+        pointRadius: 2,
+        tension: 0.25,
+      },
+    ],
+  }
+})
+
+const lineChartOptions = computed(() => ({
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: {
+      labels: { color: '#94A3B8', boxWidth: 10, boxHeight: 10 },
+    },
+    tooltip: {
+      callbacks: {
+        label: (ctx) => `${ctx.dataset.label}: $${Number(ctx.parsed.y || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`,
+      },
+    },
+  },
+  scales: {
+    x: {
+      ticks: { color: '#94A3B8' },
+      grid: { display: false },
+    },
+    y: {
+      ticks: {
+        color: '#94A3B8',
+        callback: (value) => `$${Number(value).toLocaleString('en-US')}`,
+      },
+      grid: { color: 'rgba(148,163,184,0.15)' },
+    },
+  },
+}))
+
 const fmt = (v) => v != null ? Number(v).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) : '—'
 const fmtBytes = (b) => b > 1048576 ? `${(b/1048576).toFixed(1)} MB` : `${(b/1024).toFixed(0)} KB`
 
 const loadProperty = async () => {
   const res = await api.get(`/api/properties/${propertyId}`)
   property.value = res.data
+}
+
+const loadAnalytics = async () => {
+  loadingAnalytics.value = true
+  try {
+    const res = await api.get(`/api/properties/${propertyId}/analytics?months=${historyMonths.value}`)
+    analytics.value = res.data
+  } catch {
+    analytics.value = null
+  } finally {
+    loadingAnalytics.value = false
+  }
 }
 
 const loadTxns = async () => {
@@ -361,12 +493,14 @@ const addTxn = async () => {
     showAddTxn.value = false
     txnForm.value = { type: 'income', amount: '', date: new Date().toISOString().slice(0,10), description: '', category: '' }
     await loadTxns()
+    await loadAnalytics()
   } finally { savingTxn.value = false }
 }
 
 const deleteTxn = async (id) => {
   await api.delete(`/api/properties/${propertyId}/transactions/${id}`)
-  transactions.value = transactions.value.filter(t => t.id !== id)
+  await loadTxns()
+  await loadAnalytics()
 }
 
 const uploadFile = async (e) => {
@@ -421,6 +555,7 @@ const linkMortgage = async () => {
     property.value = res.data
     showLinkMortgage.value = false
     selectedLoanAccount.value = null
+    await loadAnalytics()
   } finally { linking.value = false }
 }
 
@@ -428,6 +563,7 @@ const unlinkMortgage = async () => {
   if (!confirm('Unlink this mortgage account? Mortgage fields will keep their current values.')) return
   const res = await api.delete(`/api/properties/${propertyId}/link-mortgage`)
   property.value = res.data
+  await loadAnalytics()
 }
 
 const syncMortgage = async () => {
@@ -435,7 +571,21 @@ const syncMortgage = async () => {
   try {
     const res = await api.post(`/api/properties/${propertyId}/sync-mortgage`)
     property.value = res.data
+    await loadAnalytics()
   } finally { syncing.value = false }
+}
+
+const applyEstimatedValue = async () => {
+  const estimated = analytics.value?.current?.effective_current_value
+  if (!estimated) return
+  applyingEstimate.value = true
+  try {
+    const res = await api.put(`/api/properties/${propertyId}`, { current_value: Number(estimated) })
+    property.value = res.data
+    await loadAnalytics()
+  } finally {
+    applyingEstimate.value = false
+  }
 }
 
 const fmtCurrency = (v) => v != null ? `$${Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : null
@@ -479,6 +629,7 @@ const handleImportFile = async (e) => {
     }
 
     property.value = res.data.property
+    await loadAnalytics()
     showCsvResult.value = true
   } catch (err) {
     const msg = err.response?.data?.detail || `${isJson ? 'JSON' : 'CSV'} import failed`
@@ -492,7 +643,11 @@ watch(showLinkMortgage, (open) => {
   if (open && loanAccounts.value.length === 0) loadLoanAccounts()
 })
 
+watch(historyMonths, async () => {
+  await loadAnalytics()
+})
+
 onMounted(async () => {
-  await Promise.all([loadProperty(), loadTxns(), loadDocs(), loadLoanAccounts()])
+  await Promise.all([loadProperty(), loadTxns(), loadDocs(), loadLoanAccounts(), loadAnalytics()])
 })
 </script>

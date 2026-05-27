@@ -1,16 +1,28 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from pydantic import BaseModel, model_validator
 from typing import Optional
+from datetime import date
+from functools import lru_cache
+from urllib.request import urlopen
+from urllib.error import URLError, HTTPError
 from database import get_pool
 from auth_routes import get_current_user
 import json
 import csv
 import io
+import re
 import db_plaid
 import plaid_client as pc
 from routers.plaid import fetch_mortgage_liability
 
 router = APIRouter(tags=["properties"])
+
+IMPROVEMENT_CATEGORIES = ("improvement", "renovation", "capital_improvement", "upgrade")
+IMPROVEMENT_WEIGHT = 0.80
+MARKET_BLEND_WEIGHT = 0.30
+MARKET_ANNUAL_GROWTH = 0.03
+DEFAULT_PRINCIPAL_SHARE = 0.35
+_PRINCIPAL_RE = re.compile(r"principal\s*\$?([0-9,]+(?:\.[0-9]+)?)", re.IGNORECASE)
 
 
 class PropertyCreate(BaseModel):
@@ -368,6 +380,268 @@ def delete_property(property_id: int, current_user: dict = Depends(get_current_u
             if cur.rowcount == 0:
                 raise HTTPException(status_code=404, detail="Property not found")
             conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Property analytics (debt/equity history + valuation estimate)
+# ---------------------------------------------------------------------------
+
+def _month_start(d: date) -> date:
+    return date(d.year, d.month, 1)
+
+
+def _add_months(d: date, delta_months: int) -> date:
+    month_index = (d.year * 12 + (d.month - 1)) + delta_months
+    year = month_index // 12
+    month = (month_index % 12) + 1
+    return date(year, month, 1)
+
+
+def _month_key(d: date) -> str:
+    return f"{d.year}-{d.month:02d}"
+
+
+def _zip5(raw_zip: Optional[str]) -> Optional[str]:
+    if not raw_zip:
+        return None
+    digits = "".join(ch for ch in str(raw_zip) if ch.isdigit())
+    if len(digits) < 5:
+        return None
+    return digits[:5]
+
+
+@lru_cache(maxsize=512)
+def _fetch_zip_median_home_value(zip_code: Optional[str]) -> Optional[float]:
+    """Use US Census ACS as a free public market-value proxy for ZIP areas."""
+    zip5 = _zip5(zip_code)
+    if not zip5:
+        return None
+
+    for year in (2024, 2023, 2022, 2021):
+        url = (
+            f"https://api.census.gov/data/{year}/acs/acs5"
+            f"?get=B25077_001E&for=zip%20code%20tabulation%20area:{zip5}"
+        )
+        try:
+            with urlopen(url, timeout=4) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            if len(payload) < 2 or len(payload[1]) < 1:
+                continue
+            raw_val = payload[1][0]
+            if raw_val in (None, "", "null", "-666666666", "-888888888", "-999999999"):
+                continue
+            val = float(raw_val)
+            if val > 0:
+                return val
+        except (URLError, HTTPError, TimeoutError, ValueError, json.JSONDecodeError):
+            continue
+    return None
+
+
+def _get_improvement_rows(property_id: int, end_date: date) -> list[tuple]:
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT date, amount
+                FROM flowmint.property_transactions
+                WHERE property_id = %s
+                  AND type = 'expense'
+                  AND category = ANY(%s::text[])
+                  AND date <= %s
+                ORDER BY date ASC
+                """,
+                (property_id, list(IMPROVEMENT_CATEGORIES), end_date)
+            )
+            return cur.fetchall()
+
+
+def _get_mortgage_rows(property_id: int, start_date: date, end_date: date) -> list[tuple]:
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT date, amount, description
+                FROM flowmint.property_transactions
+                WHERE property_id = %s
+                  AND type = 'expense'
+                  AND category = 'mortgage'
+                  AND date >= %s
+                  AND date <= %s
+                ORDER BY date ASC
+                """,
+                (property_id, start_date, end_date)
+            )
+            return cur.fetchall()
+
+
+def _extract_principal_amount(amount: float, description: Optional[str]) -> float:
+    if description:
+        m = _PRINCIPAL_RE.search(description)
+        if m:
+            try:
+                return max(float(m.group(1).replace(",", "")), 0.0)
+            except ValueError:
+                pass
+    return max(float(amount) * DEFAULT_PRINCIPAL_SHARE, 0.0)
+
+
+def _estimate_current_value(property_obj: dict, improvement_total: float) -> dict:
+    user_current = property_obj.get("current_value")
+    user_baseline = user_current if user_current is not None else property_obj.get("purchase_price")
+    market_estimate = _fetch_zip_median_home_value(property_obj.get("zip"))
+
+    if user_baseline is not None and market_estimate is not None:
+        baseline = (1.0 - MARKET_BLEND_WEIGHT) * float(user_baseline) + MARKET_BLEND_WEIGHT * float(market_estimate)
+        source = "blended_user_market"
+    elif user_baseline is not None:
+        baseline = float(user_baseline)
+        source = "user_value"
+    elif market_estimate is not None:
+        baseline = float(market_estimate)
+        source = "market_only"
+    else:
+        baseline = 0.0
+        source = "none"
+
+    weighted_improvements = float(improvement_total) * IMPROVEMENT_WEIGHT
+    estimated = max(baseline + weighted_improvements, 0.0)
+
+    return {
+        "baseline_value": baseline,
+        "market_estimate": float(market_estimate) if market_estimate is not None else None,
+        "weighted_improvement_value": weighted_improvements,
+        "estimated_current_value": estimated,
+        "valuation_source": source,
+    }
+
+
+def _build_property_analytics(property_obj: dict, months: int) -> dict:
+    today = date.today()
+    end_month = _month_start(today)
+    start_month = _add_months(end_month, -(months - 1))
+    month_points = [_add_months(start_month, i) for i in range(months)]
+
+    debt_now = float(property_obj.get("mortgage_balance") or 0.0)
+
+    improvement_rows = _get_improvement_rows(property_obj["id"], today)
+    total_improvement_spend = sum(float(r[1]) for r in improvement_rows)
+    valuation = _estimate_current_value(property_obj, total_improvement_spend)
+
+    effective_current_value = (
+        float(property_obj["current_value"])
+        if property_obj.get("current_value") is not None
+        else float(valuation["estimated_current_value"])
+    )
+
+    mortgage_rows = _get_mortgage_rows(property_obj["id"], start_month, today)
+    principal_by_month: dict[str, float] = {_month_key(m): 0.0 for m in month_points}
+    for d, amount, description in mortgage_rows:
+        key = _month_key(d)
+        if key in principal_by_month:
+            principal_by_month[key] += _extract_principal_amount(float(amount), description)
+
+    # Reconstruct debt history by rolling backward from current debt.
+    debt_by_month: dict[str, float] = {}
+    rolling_debt = debt_now
+    for month_date in reversed(month_points):
+        key = _month_key(month_date)
+        debt_by_month[key] = max(rolling_debt, 0.0)
+        rolling_debt += principal_by_month.get(key, 0.0)
+
+    improvement_by_month: dict[str, float] = {_month_key(m): 0.0 for m in month_points}
+    for d, amount in improvement_rows:
+        key = _month_key(d)
+        if key in improvement_by_month:
+            improvement_by_month[key] += float(amount)
+
+    cumulative_improvements: dict[str, float] = {}
+    running_improvements = 0.0
+    for month_date in month_points:
+        key = _month_key(month_date)
+        running_improvements += improvement_by_month.get(key, 0.0)
+        cumulative_improvements[key] = running_improvements
+
+    # Build value/equity line. Value is calibrated to today's effective value and
+    # decays backward with a modest market drift; user-disclosed improvements are
+    # layered in over time.
+    monthly_growth = MARKET_ANNUAL_GROWTH / 12.0
+    base_without_improvements = max(
+        effective_current_value - (total_improvement_spend * IMPROVEMENT_WEIGHT),
+        0.0,
+    )
+
+    history = []
+    latest_calculated_value = 0.0
+    for month_date in month_points:
+        key = _month_key(month_date)
+        months_to_current = (
+            (end_month.year - month_date.year) * 12 + (end_month.month - month_date.month)
+        )
+        market_component = (
+            base_without_improvements / ((1.0 + monthly_growth) ** months_to_current)
+            if base_without_improvements > 0
+            else 0.0
+        )
+        improvement_component = cumulative_improvements[key] * IMPROVEMENT_WEIGHT
+        value_estimate = max(market_component + improvement_component, 0.0)
+        latest_calculated_value = value_estimate
+        debt_estimate = debt_by_month.get(key, debt_now)
+        history.append(
+            {
+                "month": key,
+                "debt": round(debt_estimate, 2),
+                "value": round(value_estimate, 2),
+                "equity": round(value_estimate - debt_estimate, 2),
+                "improvements_cumulative": round(cumulative_improvements[key], 2),
+            }
+        )
+
+    if history and latest_calculated_value > 0 and effective_current_value > 0:
+        scale = effective_current_value / latest_calculated_value
+        for point in history:
+            point["value"] = round(point["value"] * scale, 2)
+            point["equity"] = round(point["value"] - point["debt"], 2)
+
+    current_debt = history[-1]["debt"] if history else round(debt_now, 2)
+    current_value = history[-1]["value"] if history else round(effective_current_value, 2)
+
+    return {
+        "history": history,
+        "current": {
+            "debt": current_debt,
+            "value": current_value,
+            "equity": round(current_value - current_debt, 2),
+            "effective_current_value": round(effective_current_value, 2),
+            "estimated_current_value": round(valuation["estimated_current_value"], 2),
+            "improvement_spend": round(total_improvement_spend, 2),
+            "weighted_improvement_value": round(valuation["weighted_improvement_value"], 2),
+            "market_estimate": round(valuation["market_estimate"], 2) if valuation["market_estimate"] is not None else None,
+            "value_source": "manual" if property_obj.get("current_value") is not None else valuation["valuation_source"],
+        },
+        "assumptions": {
+            "improvement_weight": IMPROVEMENT_WEIGHT,
+            "market_blend_weight": MARKET_BLEND_WEIGHT,
+            "market_annual_growth": MARKET_ANNUAL_GROWTH,
+            "default_principal_share": DEFAULT_PRINCIPAL_SHARE,
+            "market_source": "us_census_acs_median_home_value_by_zip",
+        },
+    }
+
+
+@router.get("/properties/{property_id}/analytics")
+def get_property_analytics(
+    property_id: int,
+    months: int = Query(24, ge=6, le=120),
+    current_user: dict = Depends(get_current_user),
+):
+    property_obj = get_property(property_id, current_user)
+    analytics = _build_property_analytics(property_obj, months)
+    return {
+        "property_id": property_id,
+        "months": months,
+        **analytics,
+    }
 
 
 # ---------------------------------------------------------------------------
