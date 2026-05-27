@@ -31,6 +31,15 @@
         >
           {{ applyingEstimate ? 'Applying…' : 'Use as current value' }}
         </button>
+        <button
+          @click="enrichFromAddress"
+          :disabled="enrichingAddress"
+          class="mt-2 ml-2 text-[11px] px-2 py-1 rounded hover:opacity-80 disabled:opacity-40"
+          style="background: var(--surface-2); color: var(--text-muted)"
+        >
+          {{ enrichingAddress ? 'Fetching…' : 'Fetch address data' }}
+        </button>
+        <p v-if="enrichStatus" class="text-[11px] mt-1" style="color: var(--text-muted)">{{ enrichStatus }}</p>
       </div>
       <div class="rounded-xl border p-4" style="background: var(--surface); border-color: var(--border)">
         <p class="text-xs mb-1" style="color: var(--text-muted)">Equity</p>
@@ -360,6 +369,8 @@ const property = ref(null)
 const analytics = ref(null)
 const loadingAnalytics = ref(true)
 const applyingEstimate = ref(false)
+const enrichingAddress = ref(false)
+const enrichStatus = ref('')
 const historyMonths = ref(24)
 const transactions = ref([])
 const txnSummary = ref(null)
@@ -585,6 +596,28 @@ const applyEstimatedValue = async () => {
     await loadAnalytics()
   } finally {
     applyingEstimate.value = false
+  }
+}
+
+const enrichFromAddress = async () => {
+  enrichingAddress.value = true
+  enrichStatus.value = ''
+  try {
+    const res = await api.post(`/api/properties/${propertyId}/enrich-address`, {
+      apply_current_value_if_empty: true,
+      force_current_value: false,
+      refresh_location_fields: false,
+    })
+    property.value = res.data.property
+    await loadAnalytics()
+    const updated = res.data.fields_updated || []
+    enrichStatus.value = updated.length
+      ? `Updated: ${updated.join(', ')}`
+      : 'No additional online fields were applied'
+  } catch (err) {
+    enrichStatus.value = err.response?.data?.detail || 'Could not fetch online property details'
+  } finally {
+    enrichingAddress.value = false
   }
 }
 

@@ -79,10 +79,21 @@
     <Dialog v-model:visible="showAdd" header="Add Property" modal :style="{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)', width: '420px' }">
       <div class="space-y-3 py-2">
         <div>
-          <label class="block text-xs mb-1.5" style="color: var(--text-muted)">Street Address *</label>
+          <div class="flex items-center justify-between mb-1.5">
+            <label class="block text-xs" style="color: var(--text-muted)">Street Address *</label>
+            <button
+              @click="autofillFromAddress"
+              :disabled="autofilling || !form.address"
+              class="text-[11px] px-2 py-1 rounded hover:opacity-80 disabled:opacity-40"
+              style="background: var(--surface-2); color: var(--text-muted)"
+            >
+              {{ autofilling ? 'Fetching…' : 'Auto-fill from address' }}
+            </button>
+          </div>
           <InputText v-model="form.address" class="w-full" placeholder="123 Main St" />
+          <p v-if="autofillNote" class="text-[11px] mt-1" style="color: var(--text-muted)">{{ autofillNote }}</p>
         </div>
-        <div class="grid grid-cols-3 gap-2">
+        <div class="grid grid-cols-4 gap-2">
           <div class="col-span-2">
             <label class="block text-xs mb-1.5" style="color: var(--text-muted)">City</label>
             <InputText v-model="form.city" class="w-full" placeholder="City" />
@@ -90,6 +101,10 @@
           <div>
             <label class="block text-xs mb-1.5" style="color: var(--text-muted)">State</label>
             <InputText v-model="form.state" class="w-full" placeholder="TX" maxlength="2" />
+          </div>
+          <div>
+            <label class="block text-xs mb-1.5" style="color: var(--text-muted)">ZIP</label>
+            <InputText v-model="form.zip" class="w-full" placeholder="78701" maxlength="10" />
           </div>
         </div>
         <div class="grid grid-cols-2 gap-2">
@@ -144,8 +159,10 @@ const loading = ref(true)
 const showAdd = ref(false)
 const saving = ref(false)
 const importingJson = ref(false)
+const autofilling = ref(false)
+const autofillNote = ref('')
 const jsonImportInput = ref(null)
-const form = ref({ address: '', city: '', state: '', purchase_price: '', current_value: '', mortgage_balance: '', mortgage_payment: '', mortgage_rate: '', purchase_date: '' })
+const form = ref({ address: '', city: '', state: '', zip: '', purchase_price: '', current_value: '', mortgage_balance: '', mortgage_payment: '', mortgage_rate: '', purchase_date: '' })
 
 const totalValue = computed(() => properties.value.reduce((s, p) => s + (p.current_value || 0), 0))
 const totalMortgage = computed(() => properties.value.reduce((s, p) => s + (p.mortgage_balance || 0), 0))
@@ -159,6 +176,39 @@ const load = async () => {
 }
 
 const numOrNull = (v) => v !== '' && v != null ? Number(v) : null
+
+const autofillFromAddress = async () => {
+  if (!form.value.address) return
+  autofilling.value = true
+  autofillNote.value = ''
+  try {
+    const res = await api.post('/api/properties/enrich-address', {
+      address: form.value.address,
+      city: form.value.city || null,
+      state: form.value.state || null,
+      zip: form.value.zip || null,
+    })
+
+    const std = res.data?.standardized || {}
+    if (std.city && !form.value.city) form.value.city = std.city
+    if (std.state && !form.value.state) form.value.state = std.state
+    if (std.zip && !form.value.zip) form.value.zip = std.zip
+
+    if ((form.value.current_value === '' || form.value.current_value == null) && res.data?.suggested_current_value != null) {
+      form.value.current_value = Math.round(Number(res.data.suggested_current_value))
+    }
+
+    if (res.data?.suggested_current_value != null) {
+      autofillNote.value = `Filled from online estimate: $${Number(res.data.suggested_current_value).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+    } else {
+      autofillNote.value = 'Address standardized. No value estimate found for this location.'
+    }
+  } catch (err) {
+    autofillNote.value = err.response?.data?.detail || 'Could not fetch online address details'
+  } finally {
+    autofilling.value = false
+  }
+}
 
 const addProperty = async () => {
   if (!form.value.address) return
@@ -174,7 +224,8 @@ const addProperty = async () => {
       purchase_date: form.value.purchase_date || null,
     })
     showAdd.value = false
-    form.value = { address: '', city: '', state: '', purchase_price: '', current_value: '', mortgage_balance: '', mortgage_payment: '', mortgage_rate: '', purchase_date: '' }
+    autofillNote.value = ''
+    form.value = { address: '', city: '', state: '', zip: '', purchase_price: '', current_value: '', mortgage_balance: '', mortgage_payment: '', mortgage_rate: '', purchase_date: '' }
     await load()
   } finally { saving.value = false }
 }

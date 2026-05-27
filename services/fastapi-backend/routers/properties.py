@@ -5,6 +5,7 @@ from datetime import date
 from functools import lru_cache
 from urllib.request import urlopen
 from urllib.error import URLError, HTTPError
+from urllib.parse import urlencode
 from database import get_pool
 from auth_routes import get_current_user
 import json
@@ -48,6 +49,19 @@ class PropertyCreate(BaseModel):
 
 class PropertyUpdate(PropertyCreate):
     address: Optional[str] = None
+
+
+class AddressEnrichBody(BaseModel):
+    address: str
+    city: Optional[str] = None
+    state: Optional[str] = None
+    zip: Optional[str] = None
+
+
+class AddressEnrichApplyBody(BaseModel):
+    apply_current_value_if_empty: bool = True
+    force_current_value: bool = False
+    refresh_location_fields: bool = False
 
 
 def _row_to_property(r) -> dict:
@@ -273,6 +287,170 @@ async def _read_json_object_upload(file: UploadFile) -> dict:
     return data
 
 
+def _parse_census_number(raw) -> Optional[float]:
+    if raw in (None, "", "null", "-666666666", "-888888888", "-999999999"):
+        return None
+    try:
+        val = float(raw)
+        if val < 0:
+            return None
+        return val
+    except (ValueError, TypeError):
+        return None
+
+
+def _build_oneline_address(address: str, city: Optional[str], state: Optional[str], zip_code: Optional[str]) -> str:
+    parts = [address, city, state, zip_code]
+    return ", ".join(str(p).strip() for p in parts if p and str(p).strip())
+
+
+def _geocode_address_with_census(oneline_address: str) -> Optional[dict]:
+    if not oneline_address:
+        return None
+
+    params = urlencode({
+        "address": oneline_address,
+        "benchmark": "Public_AR_Current",
+        "format": "json",
+    })
+    url = f"https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?{params}"
+
+    try:
+        with urlopen(url, timeout=5) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (URLError, HTTPError, TimeoutError, json.JSONDecodeError):
+        return None
+
+    matches = (payload.get("result") or {}).get("addressMatches") or []
+    if not matches:
+        return None
+
+    best = matches[0]
+    comps = best.get("addressComponents") or {}
+    coords = best.get("coordinates") or {}
+
+    return {
+        "matched_address": best.get("matchedAddress"),
+        "address": comps.get("fromAddress"),
+        "city": comps.get("city"),
+        "state": comps.get("state"),
+        "zip": comps.get("zip"),
+        "latitude": coords.get("y"),
+        "longitude": coords.get("x"),
+    }
+
+
+def _lookup_fips_from_coords(latitude: float, longitude: float) -> Optional[dict]:
+    params = urlencode({
+        "format": "json",
+        "latitude": str(latitude),
+        "longitude": str(longitude),
+        "showall": "true",
+    })
+    url = f"https://geo.fcc.gov/api/census/block/find?{params}"
+
+    try:
+        with urlopen(url, timeout=5) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (URLError, HTTPError, TimeoutError, json.JSONDecodeError):
+        return None
+
+    block = (payload.get("Block") or {}).get("FIPS")
+    if not block or len(block) < 11:
+        return None
+
+    return {
+        "state_fips": block[0:2],
+        "county_fips": block[2:5],
+        "tract": block[5:11],
+        "block_fips": block,
+    }
+
+
+@lru_cache(maxsize=2048)
+def _fetch_acs_tract_profile(state_fips: str, county_fips: str, tract: str) -> Optional[dict]:
+    vars_csv = "B25077_001E,B25035_001E,B25064_001E,B19013_001E"
+    for year in (2024, 2023, 2022, 2021):
+        query = urlencode([
+            ("get", vars_csv),
+            ("for", f"tract:{tract}"),
+            ("in", f"state:{state_fips}"),
+            ("in", f"county:{county_fips}"),
+        ])
+        url = f"https://api.census.gov/data/{year}/acs/acs5?{query}"
+
+        try:
+            with urlopen(url, timeout=5) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            if len(payload) < 2:
+                continue
+            row = payload[1]
+            return {
+                "year": year,
+                "median_home_value": _parse_census_number(row[0]),
+                "median_year_built": _parse_census_number(row[1]),
+                "median_rent": _parse_census_number(row[2]),
+                "median_household_income": _parse_census_number(row[3]),
+            }
+        except (URLError, HTTPError, TimeoutError, json.JSONDecodeError, IndexError):
+            continue
+
+    return None
+
+
+def _enrich_property_address(address: str, city: Optional[str], state: Optional[str], zip_code: Optional[str]) -> dict:
+    oneline = _build_oneline_address(address, city, state, zip_code)
+    if not oneline:
+        raise HTTPException(status_code=422, detail="Address is required for enrichment")
+
+    geocoded = _geocode_address_with_census(oneline)
+    std_city = geocoded.get("city") if geocoded else city
+    std_state = geocoded.get("state") if geocoded else state
+    std_zip = geocoded.get("zip") if geocoded else zip_code
+    zip5 = _zip5(std_zip or zip_code)
+
+    fips = None
+    tract_profile = None
+    if geocoded and geocoded.get("latitude") is not None and geocoded.get("longitude") is not None:
+        fips = _lookup_fips_from_coords(float(geocoded["latitude"]), float(geocoded["longitude"]))
+        if fips:
+            tract_profile = _fetch_acs_tract_profile(
+                fips["state_fips"], fips["county_fips"], fips["tract"]
+            )
+
+    zip_market_value = _fetch_zip_median_home_value(zip5)
+    tract_market_value = tract_profile.get("median_home_value") if tract_profile else None
+    suggested_current_value = tract_market_value or zip_market_value
+
+    return {
+        "input_address": oneline,
+        "matched_address": geocoded.get("matched_address") if geocoded else None,
+        "standardized": {
+            "address": geocoded.get("address") if geocoded and geocoded.get("address") else address,
+            "city": std_city,
+            "state": std_state,
+            "zip": zip5,
+        },
+        "geo": {
+            "latitude": geocoded.get("latitude") if geocoded else None,
+            "longitude": geocoded.get("longitude") if geocoded else None,
+            "state_fips": fips.get("state_fips") if fips else None,
+            "county_fips": fips.get("county_fips") if fips else None,
+            "tract": fips.get("tract") if fips else None,
+        },
+        "market": {
+            "tract_year": tract_profile.get("year") if tract_profile else None,
+            "median_home_value_tract": tract_market_value,
+            "median_home_value_zip": zip_market_value,
+            "median_year_built_tract": tract_profile.get("median_year_built") if tract_profile else None,
+            "median_rent_tract": tract_profile.get("median_rent") if tract_profile else None,
+            "median_household_income_tract": tract_profile.get("median_household_income") if tract_profile else None,
+            "source": "us_census_acs_and_fcc_geocoder",
+        },
+        "suggested_current_value": suggested_current_value,
+    }
+
+
 @router.post("/properties/import-json", status_code=201)
 async def create_property_from_json(
     file: UploadFile = File(...),
@@ -336,6 +514,11 @@ async def create_property_from_json(
     return {"property": _row_to_property(row), "summary": summary}
 
 
+@router.post("/properties/enrich-address")
+def enrich_address_preview(body: AddressEnrichBody, current_user: dict = Depends(get_current_user)):
+    return _enrich_property_address(body.address, body.city, body.state, body.zip)
+
+
 @router.get("/properties/{property_id}")
 def get_property(property_id: int, current_user: dict = Depends(get_current_user)):
     with get_pool().connection() as conn:
@@ -348,6 +531,49 @@ def get_property(property_id: int, current_user: dict = Depends(get_current_user
     if not row:
         raise HTTPException(status_code=404, detail="Property not found")
     return _row_to_property(row)
+
+
+@router.post("/properties/{property_id}/enrich-address")
+def enrich_property_from_address(
+    property_id: int,
+    body: AddressEnrichApplyBody,
+    current_user: dict = Depends(get_current_user),
+):
+    property_obj = get_property(property_id, current_user)
+    enrichment = _enrich_property_address(
+        property_obj["address"], property_obj.get("city"), property_obj.get("state"), property_obj.get("zip")
+    )
+
+    std = enrichment.get("standardized") or {}
+    updates: dict = {}
+
+    if std.get("city") and (body.refresh_location_fields or not property_obj.get("city")):
+        updates["city"] = std["city"]
+    if std.get("state") and (body.refresh_location_fields or not property_obj.get("state")):
+        updates["state"] = std["state"]
+    if std.get("zip") and (body.refresh_location_fields or not property_obj.get("zip")):
+        updates["zip"] = std["zip"]
+
+    suggested = enrichment.get("suggested_current_value")
+    if suggested is not None:
+        if body.force_current_value or (body.apply_current_value_if_empty and property_obj.get("current_value") is None):
+            updates["current_value"] = round(float(suggested), 2)
+
+    if updates:
+        cols = ", ".join(f"{k} = %s" for k in updates)
+        with get_pool().connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE flowmint.properties SET {cols} WHERE id = %s AND user_id = %s",
+                    list(updates.values()) + [property_id, current_user["id"]]
+                )
+                conn.commit()
+
+    return {
+        "property": get_property(property_id, current_user),
+        "enrichment": enrichment,
+        "fields_updated": list(updates.keys()),
+    }
 
 
 @router.put("/properties/{property_id}")
