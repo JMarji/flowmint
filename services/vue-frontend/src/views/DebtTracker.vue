@@ -65,11 +65,11 @@
 
       <div class="rounded-xl border p-4" style="background: var(--surface); border-color: var(--border)">
         <div class="flex items-center justify-between mb-3">
-          <p class="text-sm font-semibold" style="color: var(--text)">Debt by Institution</p>
-          <p class="text-xs" style="color: var(--text-muted)">Top 8</p>
+          <p class="text-sm font-semibold" style="color: var(--text)">Debt Over Time</p>
+          <p class="text-xs" style="color: var(--text-muted)">{{ historyWindowLabel }}</p>
         </div>
         <div class="h-72">
-          <Bar :data="debtInstitutionChartData" :options="barChartOptions" />
+          <Line :data="debtHistoryChartData" :options="lineChartOptions" />
         </div>
       </div>
 
@@ -95,20 +95,23 @@ import { ref, computed, onMounted } from 'vue'
 import Button from 'primevue/button'
 import api from '@/utils/api'
 import { usePlaidSync } from '@/composables/usePlaidSync'
-import { Bar, Doughnut } from 'vue-chartjs'
+import { Bar, Doughnut, Line } from 'vue-chartjs'
 import {
   Chart as ChartJS,
   ArcElement,
   BarElement,
   CategoryScale,
   LinearScale,
+  LineElement,
+  PointElement,
   Tooltip,
   Legend,
 } from 'chart.js'
 
-ChartJS.register(ArcElement, BarElement, CategoryScale, LinearScale, Tooltip, Legend)
+ChartJS.register(ArcElement, BarElement, CategoryScale, LinearScale, LineElement, PointElement, Tooltip, Legend)
 
 const accounts = ref([])
+const historyTransactions = ref([])
 const loading = ref(true)
 const error = ref('')
 const { syncing, syncNow, syncIfStale } = usePlaidSync()
@@ -154,6 +157,41 @@ const debtAccounts = computed(() => normalizedAccounts.value.filter(a => a.debt_
 const totalDebt = computed(() => debtAccounts.value.reduce((s, a) => s + a.debt_amount, 0))
 const largestDebtAmount = computed(() => debtAccounts.value.length ? Math.max(...debtAccounts.value.map(a => a.debt_amount)) : 0)
 
+const currentMonthEnd = computed(() => {
+  const now = new Date()
+  return new Date(now.getFullYear(), now.getMonth() + 1, 0)
+})
+
+const historyStartDate = computed(() => {
+  const now = new Date()
+  return new Date(now.getFullYear(), now.getMonth() - 5, 1)
+})
+
+const toIsoDate = (d) => {
+  const yyyy = d.getFullYear()
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd}`
+}
+
+const historyMonthBuckets = computed(() => {
+  const buckets = []
+  const start = new Date(historyStartDate.value)
+  for (let i = 0; i < 6; i += 1) {
+    const d = new Date(start.getFullYear(), start.getMonth() + i, 1)
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+    const label = d.toLocaleString('default', { month: 'short', year: '2-digit' })
+    buckets.push({ key, label })
+  }
+  return buckets
+})
+
+const historyWindowLabel = computed(() => {
+  const start = historyStartDate.value
+  const end = currentMonthEnd.value
+  return `${start.toLocaleString('default', { month: 'short', year: 'numeric' })} - ${end.toLocaleString('default', { month: 'short', year: 'numeric' })}`
+})
+
 const totalAssets = computed(() => {
   return accounts.value
     .filter(a => {
@@ -170,6 +208,40 @@ const debtToAssetRatio = computed(() => {
 
 const debtToAssetLabel = computed(() => debtToAssetRatio.value === '—' ? '—' : `${debtToAssetRatio.value}%`)
 
+const debtAccountKeys = computed(() => {
+  const keys = new Set()
+  for (const acct of debtAccounts.value) {
+    keys.add(`${acct.institution_name || 'Unknown Bank'}|${acct.name || 'Account'}`)
+  }
+  return keys
+})
+
+const debtNetByMonth = computed(() => {
+  const sums = Object.fromEntries(historyMonthBuckets.value.map(b => [b.key, 0]))
+  for (const txn of historyTransactions.value) {
+    if (txn.pending) continue
+    const key = `${txn.institution_name || 'Unknown Bank'}|${txn.account_name || 'Account'}`
+    if (!debtAccountKeys.value.has(key)) continue
+    const monthKey = (txn.date || '').slice(0, 7)
+    if (!(monthKey in sums)) continue
+    sums[monthKey] += Number(txn.amount || 0)
+  }
+  return sums
+})
+
+const debtHistoryRows = computed(() => {
+  let rolling = Number(totalDebt.value || 0)
+  const reversed = []
+
+  for (let i = historyMonthBuckets.value.length - 1; i >= 0; i -= 1) {
+    const bucket = historyMonthBuckets.value[i]
+    reversed.push({ label: bucket.label, value: Math.max(rolling, 0) })
+    rolling -= Number(debtNetByMonth.value[bucket.key] || 0)
+  }
+
+  return reversed.reverse()
+})
+
 const debtTypeRows = computed(() => {
   const sums = {}
   for (const acct of debtAccounts.value) {
@@ -179,18 +251,6 @@ const debtTypeRows = computed(() => {
   return Object.entries(sums)
     .map(([label, value]) => ({ label, value }))
     .sort((a, b) => b.value - a.value)
-})
-
-const debtInstitutionRows = computed(() => {
-  const sums = {}
-  for (const acct of debtAccounts.value) {
-    const key = acct.institution_name || 'Unknown Bank'
-    sums[key] = (sums[key] || 0) + acct.debt_amount
-  }
-  return Object.entries(sums)
-    .map(([label, value]) => ({ label, value }))
-    .sort((a, b) => b.value - a.value)
-    .slice(0, 8)
 })
 
 const debtAccountRows = computed(() => {
@@ -212,13 +272,16 @@ const debtTypeChartData = computed(() => ({
   }],
 }))
 
-const debtInstitutionChartData = computed(() => ({
-  labels: debtInstitutionRows.value.map(r => r.label),
+const debtHistoryChartData = computed(() => ({
+  labels: debtHistoryRows.value.map(r => r.label),
   datasets: [{
-    label: 'Debt',
-    data: debtInstitutionRows.value.map(r => r.value),
-    backgroundColor: '#F87171',
-    borderRadius: 8,
+    label: 'Estimated Debt',
+    data: debtHistoryRows.value.map(r => r.value),
+    borderColor: '#F87171',
+    backgroundColor: 'rgba(248,113,113,0.2)',
+    tension: 0.3,
+    fill: true,
+    pointRadius: 3,
   }],
 }))
 
@@ -274,12 +337,66 @@ const doughnutOptions = computed(() => ({
   },
 }))
 
+const lineChartOptions = computed(() => ({
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: { display: false },
+    tooltip: {
+      callbacks: {
+        label: (ctx) => `$${fmt(ctx.parsed.y ?? 0)}`,
+      },
+    },
+  },
+  scales: {
+    x: {
+      ticks: { color: '#94A3B8' },
+      grid: { display: false },
+    },
+    y: {
+      ticks: {
+        color: '#94A3B8',
+        callback: (value) => `$${Number(value).toLocaleString('en-US')}`,
+      },
+      grid: { color: 'rgba(148,163,184,0.15)' },
+    },
+  },
+}))
+
+const fetchHistoryTransactions = async () => {
+  const all = []
+  const pageSize = 200
+  let offset = 0
+  let total = 0
+
+  do {
+    const params = new URLSearchParams({
+      limit: String(pageSize),
+      offset: String(offset),
+      start_date: toIsoDate(historyStartDate.value),
+      end_date: toIsoDate(currentMonthEnd.value),
+    })
+    const res = await api.get(`/api/transactions?${params}`)
+    const txns = res.data?.transactions || []
+    total = Number(res.data?.total || 0)
+    all.push(...txns)
+    offset += pageSize
+    if (!txns.length) break
+  } while (offset < total && offset < 2000)
+
+  return all
+}
+
 const load = async () => {
   loading.value = true
   error.value = ''
   try {
-    const res = await api.get('/api/accounts')
-    accounts.value = res.data || []
+    const [accountsRes, txns] = await Promise.all([
+      api.get('/api/accounts'),
+      fetchHistoryTransactions(),
+    ])
+    accounts.value = accountsRes.data || []
+    historyTransactions.value = txns
   } catch (e) {
     error.value = 'Failed to load debt accounts'
   } finally {
