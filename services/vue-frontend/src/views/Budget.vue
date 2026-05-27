@@ -1,5 +1,5 @@
 <template>
-  <div class="p-6 max-w-4xl mx-auto">
+  <div class="p-6 max-w-6xl mx-auto">
     <div class="flex items-center justify-between mb-6">
       <div>
         <h1 class="text-2xl font-bold" style="color: var(--text)">Budget</h1>
@@ -26,6 +26,46 @@
       <div class="rounded-xl border p-4 text-center" style="background: var(--surface); border-color: var(--border)">
         <p class="text-xs mb-1" style="color: var(--text-muted)">Remaining</p>
         <p class="text-lg font-bold" :style="totalRemaining < 0 ? 'color:#f87171' : 'color: var(--mint)'">${{ fmt(totalRemaining) }}</p>
+      </div>
+    </div>
+
+    <!-- Account insights -->
+    <div v-if="loadingInsights" class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+      <div v-for="i in 2" :key="i" class="rounded-xl border p-4 animate-pulse" style="background: var(--surface); border-color: var(--border)">
+        <div class="h-4 rounded w-1/3 mb-4" style="background: var(--surface-2)"></div>
+        <div class="h-64 rounded" style="background: var(--surface-2)"></div>
+      </div>
+    </div>
+
+    <div v-else-if="hasAccountInsights" class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+      <div class="rounded-xl border p-4" style="background: var(--surface); border-color: var(--border)">
+        <div class="flex items-center justify-between mb-3">
+          <p class="text-sm font-semibold" style="color: var(--text)">Balances by Account</p>
+          <p class="text-xs" style="color: var(--text-muted)">Top 8</p>
+        </div>
+        <div class="h-72">
+          <Bar :data="balancesByAccountChartData" :options="barChartOptions" />
+        </div>
+      </div>
+
+      <div class="rounded-xl border p-4" style="background: var(--surface); border-color: var(--border)">
+        <div class="flex items-center justify-between mb-3">
+          <p class="text-sm font-semibold" style="color: var(--text)">Balance Mix by Account Type</p>
+          <p class="text-xs" style="color: var(--text-muted)">Current</p>
+        </div>
+        <div class="h-72">
+          <Doughnut :data="balanceByTypeChartData" :options="doughnutOptions" />
+        </div>
+      </div>
+
+      <div class="rounded-xl border p-4 lg:col-span-2" style="background: var(--surface); border-color: var(--border)">
+        <div class="flex items-center justify-between mb-3">
+          <p class="text-sm font-semibold" style="color: var(--text)">Spending by Account</p>
+          <p class="text-xs" style="color: var(--text-muted)">{{ displayMonth }}</p>
+        </div>
+        <div class="h-72">
+          <Bar :data="spendingByAccountChartData" :options="barChartOptions" />
+        </div>
       </div>
     </div>
 
@@ -92,6 +132,19 @@ import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import api from '@/utils/api'
+import { Bar, Doughnut } from 'vue-chartjs'
+import {
+  Chart as ChartJS,
+  ArcElement,
+  BarElement,
+  CategoryScale,
+  LinearScale,
+  Tooltip,
+  Legend,
+} from 'chart.js'
+import { usePlaidSync } from '@/composables/usePlaidSync'
+
+ChartJS.register(ArcElement, BarElement, CategoryScale, LinearScale, Tooltip, Legend)
 
 const CATEGORIES = [
   { value: 'FOOD_AND_DRINK', label: 'Food & Drink' },
@@ -106,11 +159,15 @@ const CATEGORIES = [
 ]
 
 const budgets = ref([])
+const accounts = ref([])
+const monthlyTransactions = ref([])
 const loading = ref(true)
+const loadingInsights = ref(true)
 const showAdd = ref(false)
 const saving = ref(false)
 const currentDate = ref(new Date())
 const newBudget = ref({ category: 'FOOD_AND_DRINK', monthly_limit: '' })
+const { syncIfStale } = usePlaidSync()
 
 const monthYear = computed(() => {
   const d = currentDate.value
@@ -121,6 +178,18 @@ const totalBudgeted = computed(() => budgets.value.reduce((s, b) => s + b.monthl
 const totalSpent = computed(() => budgets.value.reduce((s, b) => s + b.spent, 0))
 const totalRemaining = computed(() => totalBudgeted.value - totalSpent.value)
 
+const monthDateRange = computed(() => {
+  const d = currentDate.value
+  const year = d.getFullYear()
+  const month = d.getMonth() + 1
+  const lastDay = new Date(year, month, 0).getDate()
+  const mm = String(month).padStart(2, '0')
+  return {
+    start: `${year}-${mm}-01`,
+    end: `${year}-${mm}-${String(lastDay).padStart(2, '0')}`,
+  }
+})
+
 const fmt = (v) => Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const fmtCat = (c) => c?.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, l => l.toUpperCase()) || c
 const catIcon = (c) => {
@@ -130,12 +199,189 @@ const catIcon = (c) => {
   return m[c] || 'pi-wallet'
 }
 
+const accountTypeCategory = (acct) => {
+  const subtype = (acct.subtype || '').toString().trim().toLowerCase().replace(/[_-]+/g, ' ')
+  const type = (acct.type || '').toString().trim().toLowerCase()
+
+  if (
+    ['mortgage', 'heloc', 'auto', 'student loan', 'personal loan', 'loan'].includes(subtype) ||
+    type === 'loan'
+  ) return 'Loan'
+
+  if (subtype.includes('credit') || type === 'credit') return 'Credit'
+
+  if (
+    ['checking', 'savings', 'money market', 'cd', 'cash management'].includes(subtype) ||
+    type === 'depository'
+  ) return 'Deposit'
+
+  if (
+    subtype.includes('brokerage') ||
+    subtype.includes('retirement') ||
+    subtype.includes('ira') ||
+    type === 'investment'
+  ) return 'Investment'
+
+  return 'Other'
+}
+
+const accountLabel = (acct) => {
+  const institution = acct.institution_name || 'Unknown Bank'
+  return `${institution} · ${acct.name}`
+}
+
+const palette = [
+  '#3DDBB8', '#60A5FA', '#F59E0B', '#F87171', '#22D3EE', '#A78BFA', '#34D399', '#FB7185',
+]
+
+const accountBalanceRows = computed(() => {
+  return accounts.value
+    .map(a => ({ label: accountLabel(a), value: Number(a.current_balance || 0) }))
+    .filter(a => a.value !== 0)
+    .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
+    .slice(0, 8)
+})
+
+const balanceByTypeRows = computed(() => {
+  const sums = {}
+  for (const acct of accounts.value) {
+    const key = accountTypeCategory(acct)
+    sums[key] = (sums[key] || 0) + Number(acct.current_balance || 0)
+  }
+  return Object.entries(sums)
+    .map(([label, value]) => ({ label, value }))
+    .filter(r => r.value !== 0)
+    .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
+})
+
+const monthlySpendRows = computed(() => {
+  const sums = {}
+  for (const txn of monthlyTransactions.value) {
+    if (txn.pending || Number(txn.amount) <= 0) continue
+    const key = `${txn.institution_name || 'Unknown Bank'} · ${txn.account_name || 'Account'}`
+    sums[key] = (sums[key] || 0) + Number(txn.amount || 0)
+  }
+  return Object.entries(sums)
+    .map(([label, value]) => ({ label, value }))
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 8)
+})
+
+const hasAccountInsights = computed(() =>
+  accountBalanceRows.value.length > 0 || balanceByTypeRows.value.length > 0 || monthlySpendRows.value.length > 0
+)
+
+const balancesByAccountChartData = computed(() => ({
+  labels: accountBalanceRows.value.map(r => r.label),
+  datasets: [{
+    label: 'Balance',
+    data: accountBalanceRows.value.map(r => r.value),
+    backgroundColor: accountBalanceRows.value.map((_, i) => palette[i % palette.length]),
+    borderRadius: 8,
+  }],
+}))
+
+const balanceByTypeChartData = computed(() => ({
+  labels: balanceByTypeRows.value.map(r => r.label),
+  datasets: [{
+    data: balanceByTypeRows.value.map(r => r.value),
+    backgroundColor: balanceByTypeRows.value.map((_, i) => palette[i % palette.length]),
+    borderWidth: 0,
+  }],
+}))
+
+const spendingByAccountChartData = computed(() => ({
+  labels: monthlySpendRows.value.map(r => r.label),
+  datasets: [{
+    label: 'Spent',
+    data: monthlySpendRows.value.map(r => r.value),
+    backgroundColor: '#fb923c',
+    borderRadius: 8,
+  }],
+}))
+
+const barChartOptions = computed(() => ({
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: { display: false },
+    tooltip: {
+      callbacks: {
+        label: (ctx) => `$${fmt(ctx.parsed.y ?? ctx.parsed.x ?? 0)}`,
+      },
+    },
+  },
+  scales: {
+    x: {
+      ticks: { color: '#94A3B8' },
+      grid: { display: false },
+    },
+    y: {
+      ticks: {
+        color: '#94A3B8',
+        callback: (value) => `$${Number(value).toLocaleString('en-US')}`,
+      },
+      grid: { color: 'rgba(148,163,184,0.15)' },
+    },
+  },
+}))
+
+const doughnutOptions = computed(() => ({
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: {
+      position: 'bottom',
+      labels: { color: '#94A3B8', boxWidth: 10, boxHeight: 10 },
+    },
+    tooltip: {
+      callbacks: {
+        label: (ctx) => `${ctx.label}: $${fmt(ctx.raw || 0)}`,
+      },
+    },
+  },
+}))
+
+const fetchMonthlyTransactions = async () => {
+  const all = []
+  const pageSize = 200
+  let offset = 0
+  let total = 0
+
+  do {
+    const params = new URLSearchParams({
+      limit: String(pageSize),
+      offset: String(offset),
+      start_date: monthDateRange.value.start,
+      end_date: monthDateRange.value.end,
+    })
+    const res = await api.get(`/api/transactions?${params}`)
+    const txns = res.data?.transactions || []
+    total = Number(res.data?.total || 0)
+    all.push(...txns)
+    offset += pageSize
+    if (!txns.length) break
+  } while (offset < total && offset < 2000)
+
+  return all
+}
+
 const load = async () => {
   loading.value = true
+  loadingInsights.value = true
   try {
-    const res = await api.get(`/api/budgets?month_year=${monthYear.value}`)
-    budgets.value = res.data
-  } finally { loading.value = false }
+    const [budgetRes, accountsRes, txns] = await Promise.all([
+      api.get(`/api/budgets?month_year=${monthYear.value}`),
+      api.get('/api/accounts'),
+      fetchMonthlyTransactions(),
+    ])
+    budgets.value = budgetRes.data
+    accounts.value = (accountsRes.data || []).filter(a => Number.isInteger(a.id) && a.item_db_id !== null)
+    monthlyTransactions.value = txns
+  } finally {
+    loading.value = false
+    loadingInsights.value = false
+  }
 }
 
 const prevMonth = () => {
@@ -166,5 +412,10 @@ const deleteBudget = async (id) => {
   budgets.value = budgets.value.filter(b => b.id !== id)
 }
 
-onMounted(load)
+onMounted(async () => {
+  try {
+    await syncIfStale({ maxAgeMs: 3 * 60_000 })
+  } catch (e) {}
+  await load()
+})
 </script>
