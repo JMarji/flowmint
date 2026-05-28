@@ -30,8 +30,29 @@ def run_migrations():
                     id SERIAL PRIMARY KEY,
                     user_id INTEGER NOT NULL REFERENCES flowmint.users(id) ON DELETE CASCADE,
                     title TEXT NOT NULL,
+                    property_id INTEGER REFERENCES flowmint.properties(id) ON DELETE SET NULL,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
+            """)
+            cur.execute("""
+                ALTER TABLE flowmint.plans
+                ADD COLUMN IF NOT EXISTS property_id INTEGER
+            """)
+            cur.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM pg_constraint
+                        WHERE conname = 'plans_property_id_fkey'
+                    ) THEN
+                        ALTER TABLE flowmint.plans
+                        ADD CONSTRAINT plans_property_id_fkey
+                        FOREIGN KEY (property_id)
+                        REFERENCES flowmint.properties(id)
+                        ON DELETE SET NULL;
+                    END IF;
+                END $$;
             """)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS flowmint.plan_messages (
@@ -40,6 +61,17 @@ def run_migrations():
                     role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
                     content TEXT NOT NULL,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS flowmint.plan_todos (
+                    id SERIAL PRIMARY KEY,
+                    plan_id INTEGER NOT NULL REFERENCES flowmint.plans(id) ON DELETE CASCADE,
+                    content TEXT NOT NULL,
+                    done BOOLEAN NOT NULL DEFAULT FALSE,
+                    position INTEGER NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
             cur.execute("""

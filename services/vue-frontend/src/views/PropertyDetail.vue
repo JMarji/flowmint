@@ -103,6 +103,130 @@
       </div>
     </div>
 
+    <!-- Embedded plans + todos -->
+    <div class="rounded-xl border p-4 mb-8" style="background: var(--surface); border-color: var(--border)">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <p class="text-sm font-semibold" style="color: var(--text)">Property Plan Workspace</p>
+          <p class="text-xs mt-0.5" style="color: var(--text-muted)">Chat about this property and track execution in todos.</p>
+        </div>
+      </div>
+
+      <div class="grid lg:grid-cols-12 gap-4">
+        <aside class="lg:col-span-3 rounded-xl border p-3" style="border-color: var(--border); background: var(--surface-2)">
+          <div class="flex items-center justify-between mb-3">
+            <p class="text-xs font-semibold" style="color: var(--text)">Plans</p>
+            <button @click="showNewPlanComposer = !showNewPlanComposer" class="text-xs px-2 py-1 rounded hover:opacity-80" style="background: rgba(61,219,184,0.18); color: var(--mint)">
+              {{ showNewPlanComposer ? 'Close' : 'New' }}
+            </button>
+          </div>
+
+          <div v-if="showNewPlanComposer" class="space-y-2 mb-3">
+            <InputText v-model="newPlanTitle" class="w-full" placeholder="Plan title" />
+            <Button @click="createPropertyPlan" size="small" class="p-button-primary w-full" :disabled="!newPlanTitle.trim()" :loading="creatingPropertyPlan" label="Create" />
+          </div>
+
+          <div v-if="loadingPropertyPlans" class="text-xs py-4 text-center" style="color: var(--text-muted)">Loading plans…</div>
+          <div v-else-if="propertyPlans.length === 0" class="text-xs py-6 text-center" style="color: var(--text-muted)">No plans for this property yet.</div>
+          <div v-else class="space-y-1">
+            <div
+              v-for="plan in propertyPlans"
+              :key="plan.id"
+              @click="selectPropertyPlan(plan)"
+              class="group flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg cursor-pointer transition"
+              :style="selectedPlan?.id === plan.id ? 'background: var(--mint); color: #080C0B' : 'background: transparent; color: var(--text-muted)'"
+            >
+              <p class="text-xs truncate" :style="selectedPlan?.id === plan.id ? 'color: #080C0B' : 'color: var(--text)'">{{ plan.title }}</p>
+              <button @click.stop="deletePropertyPlan(plan.id)" class="opacity-0 group-hover:opacity-80 transition-opacity" :style="selectedPlan?.id === plan.id ? 'color: #080C0B' : 'color: var(--text-muted)'">
+                <i class="pi pi-trash text-[10px]"></i>
+              </button>
+            </div>
+          </div>
+        </aside>
+
+        <div class="lg:col-span-6 rounded-xl border flex flex-col" style="border-color: var(--border); min-height: 380px">
+          <div class="px-3 py-2 border-b" style="border-color: var(--border)">
+            <p class="text-xs" style="color: var(--text)">{{ selectedPlan ? selectedPlan.title : 'Select a plan' }}</p>
+          </div>
+
+          <div v-if="!selectedPlan" class="flex-1 flex items-center justify-center px-6">
+            <p class="text-xs text-center" style="color: var(--text-muted)">Pick a plan on the left to chat, or create one for this property.</p>
+          </div>
+
+          <template v-else>
+            <div ref="planMessagesEl" class="flex-1 overflow-y-auto px-3 py-3 space-y-3">
+              <div v-if="loadingPlanMessages" class="text-xs text-center py-6" style="color: var(--text-muted)">Loading conversation…</div>
+
+              <div v-else-if="planMessages.length === 0" class="space-y-2">
+                <button
+                  v-for="prompt in ['Build a 12-month plan to increase this property\'s cash flow', 'What should I prioritize over the next 30 days for this property?']"
+                  :key="prompt"
+                  @click="sendPlanMessage(prompt)"
+                  :disabled="streamingPlan"
+                  class="w-full text-left text-xs rounded-lg border px-3 py-2 hover:opacity-80 disabled:opacity-50"
+                  style="border-color: var(--border); color: var(--text-muted); background: var(--surface-2)"
+                >
+                  {{ prompt }}
+                </button>
+              </div>
+
+              <div v-else v-for="(msg, i) in planMessages" :key="i" :class="['flex', msg.role === 'user' ? 'justify-end' : 'justify-start']">
+                <div class="max-w-[85%] rounded-xl px-3 py-2 text-xs leading-relaxed"
+                  :style="msg.role === 'user' ? 'background: var(--mint); color: #080C0B' : 'background: var(--surface-2); color: var(--text); border: 1px solid var(--border)'">
+                  <pre class="whitespace-pre-wrap font-sans text-xs leading-relaxed">{{ msg.content }}<span v-if="msg.streaming" class="inline-block w-0.5 h-3 ml-0.5 align-text-bottom animate-pulse" style="background: currentColor"></span></pre>
+                </div>
+              </div>
+            </div>
+
+            <div class="px-3 py-2 border-t" style="border-color: var(--border)">
+              <div class="flex items-end gap-2">
+                <Textarea
+                  v-model="planInputText"
+                  @keydown.enter.exact.prevent="sendPlan"
+                  :autoResize="true"
+                  rows="1"
+                  class="flex-1 text-xs"
+                  placeholder="Ask about this property plan, or say: add todo: call lender"
+                  :disabled="streamingPlan"
+                />
+                <Button icon="pi pi-send" class="p-button-primary" size="small" :loading="streamingPlan" :disabled="!planInputText.trim() || streamingPlan" @click="sendPlan" />
+              </div>
+            </div>
+          </template>
+        </div>
+
+        <aside class="lg:col-span-3 rounded-xl border p-3" style="border-color: var(--border); background: var(--surface-2)">
+          <div class="flex items-center justify-between mb-3">
+            <p class="text-xs font-semibold" style="color: var(--text)">Todo</p>
+            <span v-if="selectedPlan" class="text-[10px] px-1.5 py-0.5 rounded" style="background: rgba(61,219,184,0.15); color: var(--mint)">{{ todos.filter(t => !t.done).length }} open</span>
+          </div>
+
+          <div v-if="!selectedPlan" class="text-xs py-6 text-center" style="color: var(--text-muted)">Select a plan to manage todos.</div>
+
+          <template v-else>
+            <div class="flex gap-2 mb-3">
+              <InputText v-model="todoInput" class="w-full" placeholder="Add a todo" @keydown.enter="addTodo" />
+              <Button icon="pi pi-plus" size="small" class="p-button-primary" :loading="addingTodo" :disabled="!todoInput.trim() || addingTodo" @click="addTodo" />
+            </div>
+
+            <div v-if="loadingTodos" class="text-xs text-center py-4" style="color: var(--text-muted)">Loading todos…</div>
+            <div v-else-if="todos.length === 0" class="text-xs text-center py-4" style="color: var(--text-muted)">No todos yet.</div>
+            <div v-else class="space-y-1.5 max-h-80 overflow-y-auto pr-0.5">
+              <div v-for="todo in todos" :key="todo.id" class="flex items-start gap-2 px-2 py-1.5 rounded-lg" style="background: var(--surface)">
+                <input type="checkbox" class="mt-0.5" :checked="todo.done" @change="toggleTodo(todo)" />
+                <p class="text-xs flex-1" :style="todo.done ? 'color: var(--text-muted); text-decoration: line-through' : 'color: var(--text)'">#{{ todo.id }} {{ todo.content }}</p>
+                <button @click="deleteTodo(todo.id)" style="color: var(--text-muted)" class="hover:opacity-80">
+                  <i class="pi pi-trash text-[10px]"></i>
+                </button>
+              </div>
+            </div>
+
+            <p class="text-[10px] mt-3" style="color: var(--text-muted)">In chat, try: "add todo: compare refinance options" or "complete todo #12".</p>
+          </template>
+        </aside>
+      </div>
+    </div>
+
     <!-- Tabs -->
     <div class="flex gap-2 mb-5">
       <button v-for="t in ['transactions','documents']" :key="t" @click="tab = t"
@@ -343,11 +467,12 @@ TotalPayment, PIPayment, EscrowPayment, LoanId</div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
+import Textarea from 'primevue/textarea'
 import api from '@/utils/api'
 import { Line } from 'vue-chartjs'
 import {
@@ -393,6 +518,25 @@ const importingCsv = ref(false)
 const showCsvResult = ref(false)
 const showCsvHelp = ref(false)
 const csvResult = ref(null)
+
+// Property-scoped planning
+const propertyPlans = ref([])
+const loadingPropertyPlans = ref(false)
+const selectedPlan = ref(null)
+const planMessages = ref([])
+const loadingPlanMessages = ref(false)
+const planInputText = ref('')
+const streamingPlan = ref(false)
+const planMessagesEl = ref(null)
+const showNewPlanComposer = ref(false)
+const creatingPropertyPlan = ref(false)
+const newPlanTitle = ref('')
+
+// Plan todos
+const todos = ref([])
+const loadingTodos = ref(false)
+const todoInput = ref('')
+const addingTodo = ref(false)
 
 const linkedAccountLabel = computed(() => {
   const acct = loanAccounts.value.find(a => a.account_id === property.value?.mortgage_account_id)
@@ -467,6 +611,183 @@ const lineChartOptions = computed(() => ({
 
 const fmt = (v) => v != null ? Number(v).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) : '—'
 const fmtBytes = (b) => b > 1048576 ? `${(b/1048576).toFixed(1)} MB` : `${(b/1024).toFixed(0)} KB`
+
+const scrollPlanMessagesToBottom = () => {
+  nextTick(() => {
+    if (planMessagesEl.value) {
+      planMessagesEl.value.scrollTop = planMessagesEl.value.scrollHeight
+    }
+  })
+}
+
+const loadPropertyPlans = async () => {
+  loadingPropertyPlans.value = true
+  try {
+    const res = await api.get(`/api/plans?property_id=${propertyId}`)
+    propertyPlans.value = res.data
+  } finally {
+    loadingPropertyPlans.value = false
+  }
+}
+
+const loadTodos = async () => {
+  if (!selectedPlan.value) {
+    todos.value = []
+    return
+  }
+  loadingTodos.value = true
+  try {
+    const res = await api.get(`/api/plans/${selectedPlan.value.id}/todos`)
+    todos.value = res.data
+  } finally {
+    loadingTodos.value = false
+  }
+}
+
+const selectPropertyPlan = async (plan) => {
+  if (selectedPlan.value?.id === plan.id) return
+  selectedPlan.value = plan
+  planMessages.value = []
+  loadingPlanMessages.value = true
+  try {
+    const res = await api.get(`/api/plans/${plan.id}/messages`)
+    planMessages.value = res.data
+    await loadTodos()
+    scrollPlanMessagesToBottom()
+  } finally {
+    loadingPlanMessages.value = false
+  }
+}
+
+const createPropertyPlan = async () => {
+  const title = newPlanTitle.value.trim()
+  if (!title || creatingPropertyPlan.value) return
+  creatingPropertyPlan.value = true
+  try {
+    const res = await api.post('/api/plans', { title, property_id: Number(propertyId) })
+    propertyPlans.value.unshift(res.data)
+    newPlanTitle.value = ''
+    showNewPlanComposer.value = false
+    await selectPropertyPlan(res.data)
+  } finally {
+    creatingPropertyPlan.value = false
+  }
+}
+
+const deletePropertyPlan = async (id) => {
+  if (!confirm('Delete this plan and all related todos/messages?')) return
+  await api.delete(`/api/plans/${id}`)
+  propertyPlans.value = propertyPlans.value.filter(p => p.id !== id)
+  if (selectedPlan.value?.id === id) {
+    selectedPlan.value = null
+    planMessages.value = []
+    todos.value = []
+  }
+}
+
+const sendPlan = () => {
+  const text = planInputText.value.trim()
+  if (!text || !selectedPlan.value || streamingPlan.value) return
+  planInputText.value = ''
+  sendPlanMessage(text)
+}
+
+const sendPlanMessage = async (text) => {
+  if (streamingPlan.value || !selectedPlan.value) return
+  planMessages.value.push({ role: 'user', content: text })
+  scrollPlanMessagesToBottom()
+
+  const assistantIdx = planMessages.value.length
+  planMessages.value.push({ role: 'assistant', content: '', streaming: true })
+  streamingPlan.value = true
+
+  try {
+    const baseUrl = api.defaults.baseURL || ''
+    const token = window.localStorage.getItem('access_token')
+
+    const response = await fetch(`${baseUrl}/api/plans/${selectedPlan.value.id}/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({ content: text }),
+    })
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`)
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop()
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const payload = line.slice(6).trim()
+        if (payload === '[DONE]') break
+        try {
+          const { text: tokenChunk, error } = JSON.parse(payload)
+          if (error) {
+            planMessages.value[assistantIdx].content = `Error: ${error}`
+          } else if (tokenChunk) {
+            planMessages.value[assistantIdx].content += tokenChunk
+            scrollPlanMessagesToBottom()
+          }
+        } catch {}
+      }
+    }
+  } catch {
+    planMessages.value[assistantIdx].content = 'Something went wrong. Please try again.'
+  } finally {
+    if (planMessages.value[assistantIdx]) {
+      planMessages.value[assistantIdx].streaming = false
+    }
+    streamingPlan.value = false
+    scrollPlanMessagesToBottom()
+    await loadTodos()
+  }
+}
+
+const addTodo = async () => {
+  const content = todoInput.value.trim()
+  if (!content || !selectedPlan.value || addingTodo.value) return
+  addingTodo.value = true
+  try {
+    const res = await api.post(`/api/plans/${selectedPlan.value.id}/todos`, { content })
+    todoInput.value = ''
+    todos.value.push(res.data)
+    todos.value.sort((a, b) => (a.done - b.done) || (a.position - b.position) || (a.id - b.id))
+  } finally {
+    addingTodo.value = false
+  }
+}
+
+const toggleTodo = async (todo) => {
+  if (!selectedPlan.value) return
+  const original = todo.done
+  todo.done = !todo.done
+  try {
+    await api.put(`/api/plans/${selectedPlan.value.id}/todos/${todo.id}`, { done: todo.done })
+    todos.value.sort((a, b) => (a.done - b.done) || (a.position - b.position) || (a.id - b.id))
+  } catch {
+    todo.done = original
+  }
+}
+
+const deleteTodo = async (todoId) => {
+  if (!selectedPlan.value) return
+  await api.delete(`/api/plans/${selectedPlan.value.id}/todos/${todoId}`)
+  todos.value = todos.value.filter(t => t.id !== todoId)
+}
 
 const loadProperty = async () => {
   const res = await api.get(`/api/properties/${propertyId}`)
@@ -681,6 +1002,6 @@ watch(historyMonths, async () => {
 })
 
 onMounted(async () => {
-  await Promise.all([loadProperty(), loadTxns(), loadDocs(), loadLoanAccounts(), loadAnalytics()])
+  await Promise.all([loadProperty(), loadTxns(), loadDocs(), loadLoanAccounts(), loadAnalytics(), loadPropertyPlans()])
 })
 </script>
