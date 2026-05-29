@@ -116,6 +116,18 @@
       <div class="rounded-xl border p-4" style="background: var(--surface); border-color: var(--border)">
         <p class="text-xs mb-1" style="color: var(--text-muted)">Monthly Payment</p>
         <p class="text-lg font-bold" style="color: var(--text)">${{ fmt(property.mortgage_payment) }}</p>
+        <div class="mt-3">
+          <p class="text-xs mb-1" style="color: var(--text-muted)">Interest Rate (%)</p>
+          <InputText
+            v-model.number="projectionInterestRate"
+            type="number"
+            min="0"
+            step="0.001"
+            class="w-full"
+            placeholder="6.5"
+          />
+          <p class="text-[10px] mt-1" style="color: var(--text-muted)">Used by interest projection</p>
+        </div>
       </div>
     </div>
 
@@ -149,11 +161,22 @@
           <p class="text-sm font-semibold" style="color: var(--text)">Interest Projection</p>
           <p class="text-xs mt-0.5" style="color: var(--text-muted)">Compares cumulative interest with your current payment vs an extra monthly principal payment.</p>
         </div>
-        <div class="grid grid-cols-2 gap-2 w-full lg:w-auto lg:min-w-[380px]">
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 w-full lg:w-auto lg:min-w-[580px]">
           <div>
             <p class="text-[11px] mb-1" style="color: var(--text-muted)">Additional payment ($/mo)</p>
             <InputText
               v-model.number="additionalPrincipalPayment"
+              type="number"
+              min="0"
+              step="1"
+              class="w-full"
+              placeholder="0"
+            />
+          </div>
+          <div>
+            <p class="text-[11px] mb-1" style="color: var(--text-muted)">Lump sum payment ($)</p>
+            <InputText
+              v-model.number="lumpSumPayment"
               type="number"
               min="0"
               step="1"
@@ -185,14 +208,14 @@
           <p class="text-[11px] mt-1" style="color: var(--text-muted)">Payoff: {{ payoffLabel(interestProjection.baseline.payoffMonth) }}</p>
         </div>
         <div class="rounded-lg p-3" style="background: var(--surface-2)">
-          <p class="text-xs" style="color: var(--text-muted)">Projected Interest (with extra)</p>
+          <p class="text-xs" style="color: var(--text-muted)">Projected Interest (extra plan)</p>
           <p class="text-sm font-bold mt-0.5" style="color: var(--text)">${{ fmt(interestProjection.withExtra.totalInterestProjected) }}</p>
           <p class="text-[11px] mt-1" style="color: var(--text-muted)">Payoff: {{ payoffLabel(interestProjection.withExtra.payoffMonth) }}</p>
         </div>
         <div class="rounded-lg p-3" style="background: var(--surface-2)">
           <p class="text-xs" style="color: var(--text-muted)">Projected Interest Saved</p>
           <p class="text-sm font-bold mt-0.5" style="color: var(--mint)">${{ fmt(projectedInterestSavings) }}</p>
-          <p class="text-[11px] mt-1" style="color: var(--text-muted)">Window: {{ Math.round(projectionMonths / 12) }} years</p>
+          <p class="text-[11px] mt-1" style="color: var(--text-muted)">Plan: +${{ fmt(additionalPrincipalPayment) }}/mo · ${{ fmt(lumpSumPayment) }} once</p>
         </div>
       </div>
 
@@ -202,9 +225,49 @@
       <div v-else-if="interestProjectionChartData.labels.length" class="h-72">
         <Line :data="interestProjectionChartData" :options="interestProjectionChartOptions" />
       </div>
+      <p v-if="projectedEquityCurve.length" class="text-[11px] mt-2" style="color: var(--text-muted)">
+        Equity curve assumes home value grows at {{ (projectionAnnualGrowthRate * 100).toFixed(1) }}% annually.
+      </p>
       <div v-else class="h-72 rounded-lg border flex items-center justify-center text-xs" style="border-color: var(--border); color: var(--text-muted)">
         No projection available.
       </div>
+    </div>
+
+    <!-- Payment mix projection -->
+    <div class="rounded-xl border p-4 mb-8" style="background: var(--surface); border-color: var(--border)">
+      <div class="flex items-start justify-between mb-3">
+        <div>
+          <p class="text-sm font-semibold" style="color: var(--text)">Payment Mix Projection</p>
+          <p class="text-xs mt-0.5" style="color: var(--text-muted)">Projected percent of each payment that goes to principal vs interest under amortization rules.</p>
+        </div>
+      </div>
+
+      <div v-if="interestProjection.error" class="h-72 rounded-lg border flex items-center justify-center text-xs px-4 text-center" style="border-color: var(--border); color: var(--text-muted)">
+        {{ interestProjection.error }}
+      </div>
+      <template v-else>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+          <div class="rounded-lg p-3" style="background: var(--surface-2)">
+            <p class="text-xs" style="color: var(--text-muted)">This Month (Current)</p>
+            <p class="text-sm font-bold mt-0.5" style="color: var(--text)">
+              Principal {{ fmtPct(paymentMixSummary.baselinePrincipalPct) }} · Interest {{ fmtPct(paymentMixSummary.baselineInterestPct) }}
+            </p>
+          </div>
+          <div class="rounded-lg p-3" style="background: var(--surface-2)">
+            <p class="text-xs" style="color: var(--text-muted)">This Month (Extra Plan)</p>
+            <p class="text-sm font-bold mt-0.5" style="color: var(--text)">
+              Principal {{ fmtPct(paymentMixSummary.withExtraPrincipalPct) }} · Interest {{ fmtPct(paymentMixSummary.withExtraInterestPct) }}
+            </p>
+          </div>
+        </div>
+
+        <div v-if="paymentMixChartData.labels.length" class="h-72">
+          <Line :data="paymentMixChartData" :options="paymentMixChartOptions" />
+        </div>
+        <div v-else class="h-72 rounded-lg border flex items-center justify-center text-xs" style="border-color: var(--border); color: var(--text-muted)">
+          No payment mix projection available.
+        </div>
+      </template>
     </div>
 
     <!-- Embedded plans + todos -->
@@ -605,6 +668,8 @@ const currentValueDraft = ref('')
 const savingCurrentValue = ref(false)
 const currentValueStatus = ref('')
 const additionalPrincipalPayment = ref(0)
+const lumpSumPayment = ref(0)
+const projectionInterestRate = ref('')
 const projectionMonths = ref(120)
 const historyMonths = ref(24)
 const transactions = ref([])
@@ -678,35 +743,83 @@ const buildInterestSchedule = ({
   annualRatePct,
   monthlyPayment,
   additionalPayment,
+  lumpSumPayment,
   monthsToProject,
 }) => {
   const labels = Array.from({ length: monthsToProject }, (_, i) => fmtMonthLabel(i))
   const cumulativeInterest = []
+  const balanceSeries = []
+  const principalShareSeries = []
+  const interestShareSeries = []
 
   let balance = startingBalance
   let totalInterest = 0
   let payoffMonth = null
 
+  const oneTimePrincipal = Math.max(Number(lumpSumPayment) || 0, 0)
+  if (oneTimePrincipal > 0) {
+    balance = Math.max(balance - oneTimePrincipal, 0)
+  }
+
+  if (balance <= 0) {
+    for (let month = 1; month <= monthsToProject; month += 1) {
+      cumulativeInterest.push(0)
+      balanceSeries.push(0)
+      principalShareSeries.push(0)
+      interestShareSeries.push(0)
+    }
+    return {
+      labels,
+      cumulativeInterest,
+      balanceSeries,
+      principalShareSeries,
+      interestShareSeries,
+      totalInterestProjected: 0,
+      payoffMonth: 0,
+    }
+  }
+
   if (annualRatePct <= 0) {
     const totalMonthlyPayment = monthlyPayment + additionalPayment
     if (totalMonthlyPayment <= 0) {
-      return { labels, cumulativeInterest: [], totalInterestProjected: 0, payoffMonth: null }
+      return {
+        labels,
+        cumulativeInterest: [],
+        balanceSeries: [],
+        principalShareSeries: [],
+        interestShareSeries: [],
+        totalInterestProjected: 0,
+        payoffMonth: null,
+      }
     }
 
     for (let month = 1; month <= monthsToProject; month += 1) {
       if (balance <= 0) {
         cumulativeInterest.push(totalInterest)
+        balanceSeries.push(0)
+        principalShareSeries.push(0)
+        interestShareSeries.push(0)
         if (payoffMonth == null) payoffMonth = month - 1
         continue
       }
-      balance = Math.max(balance - totalMonthlyPayment, 0)
+
+      const principalForMonth = Math.min(totalMonthlyPayment, balance)
+      const paymentApplied = principalForMonth
+
+      balance = Math.max(balance - principalForMonth, 0)
       cumulativeInterest.push(totalInterest)
+      balanceSeries.push(balance)
+      principalShareSeries.push(paymentApplied > 0 ? 100 : 0)
+      interestShareSeries.push(paymentApplied > 0 ? 0 : 0)
       if (balance <= 0 && payoffMonth == null) payoffMonth = month
     }
 
     return {
       labels,
       cumulativeInterest,
+      balanceSeries,
+      principalShareSeries,
+      interestShareSeries,
       totalInterestProjected: cumulativeInterest.at(-1) ?? 0,
       payoffMonth,
     }
@@ -715,7 +828,7 @@ const buildInterestSchedule = ({
   const monthlyRate = annualRatePct / 100 / 12
   const totalMonthlyPayment = monthlyPayment + additionalPayment
 
-  if (totalMonthlyPayment <= startingBalance * monthlyRate) {
+  if (totalMonthlyPayment <= balance * monthlyRate) {
     return {
       labels,
       cumulativeInterest: [],
@@ -728,6 +841,9 @@ const buildInterestSchedule = ({
   for (let month = 1; month <= monthsToProject; month += 1) {
     if (balance <= 0) {
       cumulativeInterest.push(totalInterest)
+      balanceSeries.push(0)
+      principalShareSeries.push(0)
+      interestShareSeries.push(0)
       if (payoffMonth == null) payoffMonth = month - 1
       continue
     }
@@ -735,10 +851,14 @@ const buildInterestSchedule = ({
     const interestForMonth = balance * monthlyRate
     let principalForMonth = totalMonthlyPayment - interestForMonth
     if (principalForMonth > balance) principalForMonth = balance
+    const paymentApplied = principalForMonth + interestForMonth
 
     totalInterest += interestForMonth
     balance = Math.max(balance - principalForMonth, 0)
     cumulativeInterest.push(totalInterest)
+    balanceSeries.push(balance)
+    principalShareSeries.push(paymentApplied > 0 ? (principalForMonth / paymentApplied) * 100 : 0)
+    interestShareSeries.push(paymentApplied > 0 ? (interestForMonth / paymentApplied) * 100 : 0)
 
     if (balance <= 0 && payoffMonth == null) payoffMonth = month
   }
@@ -746,6 +866,9 @@ const buildInterestSchedule = ({
   return {
     labels,
     cumulativeInterest,
+    balanceSeries,
+    principalShareSeries,
+    interestShareSeries,
     totalInterestProjected: cumulativeInterest.at(-1) ?? 0,
     payoffMonth,
   }
@@ -753,15 +876,16 @@ const buildInterestSchedule = ({
 
 const interestProjection = computed(() => {
   const balance = Number(property.value?.mortgage_balance)
-  const rate = Number(property.value?.mortgage_rate)
+  const rate = Number(projectionInterestRate.value)
   const payment = Number(property.value?.mortgage_payment)
   const extraPayment = Math.max(Number(additionalPrincipalPayment.value) || 0, 0)
+  const lumpSum = Math.max(Number(lumpSumPayment.value) || 0, 0)
 
   if (!Number.isFinite(balance) || balance <= 0) {
     return { error: 'Add a mortgage balance to project interest.', baseline: null, withExtra: null, labels: [] }
   }
   if (!Number.isFinite(rate) || rate < 0) {
-    return { error: 'Add a valid mortgage rate to project interest.', baseline: null, withExtra: null, labels: [] }
+    return { error: 'Add a valid interest rate (%) in the top row to project interest.', baseline: null, withExtra: null, labels: [] }
   }
   if (!Number.isFinite(payment) || payment <= 0) {
     return { error: 'Add a valid monthly payment to project interest.', baseline: null, withExtra: null, labels: [] }
@@ -772,6 +896,7 @@ const interestProjection = computed(() => {
     annualRatePct: rate,
     monthlyPayment: payment,
     additionalPayment: 0,
+    lumpSumPayment: 0,
     monthsToProject: projectionMonths.value,
   })
   if (baseline.error) {
@@ -783,6 +908,7 @@ const interestProjection = computed(() => {
     annualRatePct: rate,
     monthlyPayment: payment,
     additionalPayment: extraPayment,
+    lumpSumPayment: lumpSum,
     monthsToProject: projectionMonths.value,
   })
   if (withExtra.error) {
@@ -805,6 +931,24 @@ const projectedInterestSavings = computed(() => {
   )
 })
 
+const paymentMixSummary = computed(() => {
+  if (interestProjection.value.error || !interestProjection.value.baseline || !interestProjection.value.withExtra) {
+    return {
+      baselinePrincipalPct: 0,
+      baselineInterestPct: 0,
+      withExtraPrincipalPct: 0,
+      withExtraInterestPct: 0,
+    }
+  }
+
+  return {
+    baselinePrincipalPct: Number(interestProjection.value.baseline.principalShareSeries?.[0] || 0),
+    baselineInterestPct: Number(interestProjection.value.baseline.interestShareSeries?.[0] || 0),
+    withExtraPrincipalPct: Number(interestProjection.value.withExtra.principalShareSeries?.[0] || 0),
+    withExtraInterestPct: Number(interestProjection.value.withExtra.interestShareSeries?.[0] || 0),
+  }
+})
+
 const payoffLabel = (monthCount) => {
   if (monthCount == null) return `>${projectionMonths.value} months`
   if (monthCount <= 0) return 'Paid off'
@@ -815,24 +959,102 @@ const payoffLabel = (monthCount) => {
   return `${years} yr ${months} mo`
 }
 
+const projectionAnnualGrowthRate = computed(() => {
+  const raw = Number(analytics.value?.assumptions?.market_annual_growth)
+  if (Number.isFinite(raw) && raw >= 0) return raw
+  return 0.03
+})
+
+const projectedEquityCurve = computed(() => {
+  if (interestProjection.value.error || !interestProjection.value.withExtra) return []
+
+  const basePropertyValue = Number(displayCurrentValue.value)
+  if (!Number.isFinite(basePropertyValue) || basePropertyValue <= 0) return []
+
+  const monthlyGrowth = projectionAnnualGrowthRate.value / 12
+  const balances = interestProjection.value.withExtra.balanceSeries || []
+  return balances.map((balance, idx) => {
+    const projectedValue = basePropertyValue * ((1 + monthlyGrowth) ** (idx + 1))
+    return Math.max(projectedValue - Number(balance || 0), 0)
+  })
+})
+
 const interestProjectionChartData = computed(() => {
+  if (interestProjection.value.error) return { labels: [], datasets: [] }
+
+  const datasets = [
+    {
+      label: 'Cumulative Interest (Current Payment)',
+      data: interestProjection.value.baseline?.cumulativeInterest || [],
+      borderColor: '#f87171',
+      backgroundColor: 'rgba(248,113,113,0.15)',
+      pointRadius: 0,
+      tension: 0.25,
+    },
+    {
+      label: 'Cumulative Interest (With Extra Payment)',
+      data: interestProjection.value.withExtra?.cumulativeInterest || [],
+      borderColor: '#3DDBB8',
+      backgroundColor: 'rgba(61,219,184,0.15)',
+      pointRadius: 0,
+      tension: 0.25,
+    },
+  ]
+
+  if (projectedEquityCurve.value.length) {
+    datasets.push({
+      label: 'Projected Equity (With Extra Plan)',
+      data: projectedEquityCurve.value,
+      borderColor: '#60a5fa',
+      backgroundColor: 'rgba(96,165,250,0.14)',
+      pointRadius: 0,
+      tension: 0.25,
+      yAxisID: 'y1',
+    })
+  }
+
+  return {
+    labels: interestProjection.value.labels,
+    datasets,
+  }
+})
+
+const paymentMixChartData = computed(() => {
   if (interestProjection.value.error) return { labels: [], datasets: [] }
   return {
     labels: interestProjection.value.labels,
     datasets: [
       {
-        label: 'Cumulative Interest (Current Payment)',
-        data: interestProjection.value.baseline?.cumulativeInterest || [],
-        borderColor: '#f87171',
-        backgroundColor: 'rgba(248,113,113,0.15)',
+        label: 'Principal % (Current)',
+        data: interestProjection.value.baseline?.principalShareSeries || [],
+        borderColor: '#22c55e',
+        backgroundColor: 'rgba(34,197,94,0.12)',
         pointRadius: 0,
         tension: 0.25,
       },
       {
-        label: 'Cumulative Interest (With Extra Payment)',
-        data: interestProjection.value.withExtra?.cumulativeInterest || [],
+        label: 'Interest % (Current)',
+        data: interestProjection.value.baseline?.interestShareSeries || [],
+        borderColor: '#ef4444',
+        backgroundColor: 'rgba(239,68,68,0.12)',
+        pointRadius: 0,
+        tension: 0.25,
+      },
+      {
+        label: 'Principal % (Extra Plan)',
+        data: interestProjection.value.withExtra?.principalShareSeries || [],
         borderColor: '#3DDBB8',
-        backgroundColor: 'rgba(61,219,184,0.15)',
+        backgroundColor: 'rgba(61,219,184,0.12)',
+        borderDash: [6, 4],
+        pointRadius: 0,
+        tension: 0.25,
+      },
+      {
+        label: 'Interest % (Extra Plan)',
+        data: interestProjection.value.withExtra?.interestShareSeries || [],
+        borderColor: '#f97316',
+        backgroundColor: 'rgba(249,115,22,0.12)',
+        borderDash: [6, 4],
         pointRadius: 0,
         tension: 0.25,
       },
@@ -903,6 +1125,14 @@ const lineChartOptions = computed(() => ({
       },
       grid: { color: 'rgba(148,163,184,0.15)' },
     },
+    y1: {
+      position: 'right',
+      ticks: {
+        color: '#94A3B8',
+        callback: (value) => `$${Number(value).toLocaleString('en-US')}`,
+      },
+      grid: { display: false },
+    },
   },
 }))
 
@@ -937,7 +1167,41 @@ const interestProjectionChartOptions = computed(() => ({
   },
 }))
 
+const paymentMixChartOptions = computed(() => ({
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: {
+      labels: { color: '#94A3B8', boxWidth: 10, boxHeight: 10 },
+    },
+    tooltip: {
+      callbacks: {
+        label: (ctx) => `${ctx.dataset.label}: ${Number(ctx.parsed.y || 0).toFixed(1)}%`,
+      },
+    },
+  },
+  scales: {
+    x: {
+      ticks: {
+        color: '#94A3B8',
+        maxTicksLimit: 10,
+      },
+      grid: { display: false },
+    },
+    y: {
+      min: 0,
+      max: 100,
+      ticks: {
+        color: '#94A3B8',
+        callback: (value) => `${Number(value).toFixed(0)}%`,
+      },
+      grid: { color: 'rgba(148,163,184,0.15)' },
+    },
+  },
+}))
+
 const fmt = (v) => v != null ? Number(v).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) : '—'
+const fmtPct = (v) => `${Number(v || 0).toFixed(1)}%`
 const fmtBytes = (b) => b > 1048576 ? `${(b/1048576).toFixed(1)} MB` : `${(b/1024).toFixed(0)} KB`
 
 const scrollPlanMessagesToBottom = () => {
@@ -1352,6 +1616,12 @@ const handleImportFile = async (e) => {
 watch(showLinkMortgage, (open) => {
   if (open && loanAccounts.value.length === 0) loadLoanAccounts()
 })
+
+watch(() => property.value?.mortgage_rate, (rate) => {
+  if ((projectionInterestRate.value === '' || projectionInterestRate.value == null) && rate != null) {
+    projectionInterestRate.value = Number(rate)
+  }
+}, { immediate: true })
 
 watch(historyMonths, async () => {
   await loadAnalytics()
