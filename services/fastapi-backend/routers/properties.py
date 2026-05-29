@@ -1109,22 +1109,39 @@ async def import_mortgage_json(
 _COL_ALIASES = {
     "balance": "balance", "principal_balance": "balance", "outstanding_balance": "balance",
     "current_balance": "balance", "loan_balance": "balance",
+    "monetaryeventupbamount": "balance",
     "payment": "payment", "amount": "payment", "total_payment": "payment",
     "monthly_payment": "payment", "payment_amount": "payment",
+    "monetaryeventtotalpaymentamount": "payment",
     "principal": "principal", "principal_paid": "principal",
+    "principalpaymentamount": "principal",
     "interest": "interest", "interest_paid": "interest",
+    "interestpaymentamount": "interest",
     "rate": "rate", "interest_rate": "rate", "apr": "rate",
     "date": "date", "payment_date": "date", "statement_date": "date",
+    "monetaryeventapplieddate": "date", "monetaryeventeffectivedate": "date",
+    "monetaryeventpaymentduedate": "date",
 }
 
 
 def _normalize_headers(raw_headers: list) -> dict:
-    """Return mapping of original CSV header → internal field name."""
+    """Return mapping of original CSV header → internal field name.
+
+    If multiple source headers map to the same internal field, keep the first
+    one encountered so broad fallback names (e.g. "balance") do not override
+    richer servicer-specific fields (e.g. MonetaryEventUPBAmount).
+    """
     result = {}
+    chosen_fields = set()
     for h in raw_headers:
         normalized = h.strip().lower().replace(" ", "_").replace("-", "_")
-        if normalized in _COL_ALIASES:
-            result[h.strip()] = _COL_ALIASES[normalized]
+        field = _COL_ALIASES.get(normalized)
+        if not field:
+            continue
+        if field in chosen_fields:
+            continue
+        result[h.strip()] = field
+        chosen_fields.add(field)
     return result
 
 
