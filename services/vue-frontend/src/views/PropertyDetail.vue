@@ -18,12 +18,51 @@
           <p class="text-xs" style="color: var(--text-muted)">Current Value</p>
           <span v-if="!hasManualCurrentValue" class="text-[10px] px-1.5 py-0.5 rounded" style="background: rgba(96,165,250,0.15); color: #60a5fa">Estimated</span>
         </div>
-        <p class="text-lg font-bold" style="color: var(--mint)">${{ fmt(displayCurrentValue) }}</p>
+        <template v-if="editingCurrentValue">
+          <InputText
+            v-model="currentValueDraft"
+            type="number"
+            step="0.01"
+            min="0"
+            class="w-full"
+            placeholder="Enter current value"
+            @keydown.enter.prevent="saveCurrentValue"
+          />
+          <div class="flex items-center gap-2 mt-2">
+            <Button
+              @click="saveCurrentValue"
+              size="small"
+              class="p-button-primary"
+              label="Save"
+              :loading="savingCurrentValue"
+              :disabled="savingCurrentValue"
+            />
+            <Button
+              @click="cancelEditCurrentValue"
+              size="small"
+              severity="secondary"
+              text
+              label="Cancel"
+              :disabled="savingCurrentValue"
+            />
+          </div>
+        </template>
+        <template v-else>
+          <p class="text-lg font-bold" style="color: var(--mint)">${{ fmt(displayCurrentValue) }}</p>
+          <button
+            @click="startEditCurrentValue"
+            class="mt-2 text-[11px] px-2 py-1 rounded hover:opacity-80"
+            style="background: var(--surface-2); color: var(--text-muted)"
+          >
+            Edit current value
+          </button>
+        </template>
+        <p v-if="currentValueStatus" class="text-[11px] mt-1" style="color: var(--text-muted)">{{ currentValueStatus }}</p>
         <p v-if="!hasManualCurrentValue && analytics?.current?.market_estimate" class="text-[11px] mt-1" style="color: var(--text-muted)">
           Market proxy: ${{ fmt(analytics.current.market_estimate) }} · Improvements: ${{ fmt(analytics.current.improvement_spend) }}
         </p>
         <button
-          v-if="!hasManualCurrentValue && analytics?.current?.effective_current_value"
+          v-if="!editingCurrentValue && !hasManualCurrentValue && analytics?.current?.effective_current_value"
           @click="applyEstimatedValue"
           :disabled="applyingEstimate"
           class="mt-2 text-[11px] px-2 py-1 rounded hover:opacity-80 disabled:opacity-40"
@@ -33,7 +72,7 @@
         </button>
         <button
           @click="enrichFromAddress"
-          :disabled="enrichingAddress"
+          :disabled="enrichingAddress || savingCurrentValue"
           class="mt-2 ml-2 text-[11px] px-2 py-1 rounded hover:opacity-80 disabled:opacity-40"
           style="background: var(--surface-2); color: var(--text-muted)"
         >
@@ -496,6 +535,10 @@ const loadingAnalytics = ref(true)
 const applyingEstimate = ref(false)
 const enrichingAddress = ref(false)
 const enrichStatus = ref('')
+const editingCurrentValue = ref(false)
+const currentValueDraft = ref('')
+const savingCurrentValue = ref(false)
+const currentValueStatus = ref('')
 const historyMonths = ref(24)
 const transactions = ref([])
 const txnSummary = ref(null)
@@ -555,6 +598,19 @@ const displayEquity = computed(() => {
   }
   return analytics.value?.current?.equity ?? property.value?.equity ?? null
 })
+
+const startEditCurrentValue = () => {
+  const startingValue = property.value?.current_value ?? analytics.value?.current?.effective_current_value ?? ''
+  currentValueDraft.value = startingValue === '' ? '' : String(startingValue)
+  currentValueStatus.value = ''
+  editingCurrentValue.value = true
+}
+
+const cancelEditCurrentValue = () => {
+  editingCurrentValue.value = false
+  currentValueDraft.value = ''
+  currentValueStatus.value = ''
+}
 
 const debtEquityChartData = computed(() => {
   const points = analytics.value?.history || []
@@ -917,6 +973,34 @@ const applyEstimatedValue = async () => {
     await loadAnalytics()
   } finally {
     applyingEstimate.value = false
+  }
+}
+
+const saveCurrentValue = async () => {
+  const raw = currentValueDraft.value
+  if (raw === '' || raw == null) {
+    currentValueStatus.value = 'Enter a value before saving'
+    return
+  }
+
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    currentValueStatus.value = 'Enter a valid non-negative number'
+    return
+  }
+
+  savingCurrentValue.value = true
+  currentValueStatus.value = ''
+  try {
+    const res = await api.put(`/api/properties/${propertyId}`, { current_value: parsed })
+    property.value = res.data
+    editingCurrentValue.value = false
+    currentValueStatus.value = 'Current value saved'
+    await loadAnalytics()
+  } catch (err) {
+    currentValueStatus.value = err.response?.data?.detail || 'Could not save current value'
+  } finally {
+    savingCurrentValue.value = false
   }
 }
 
