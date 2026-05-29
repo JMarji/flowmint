@@ -142,6 +142,71 @@
       </div>
     </div>
 
+    <!-- Interest projection -->
+    <div class="rounded-xl border p-4 mb-8" style="background: var(--surface); border-color: var(--border)">
+      <div class="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3 mb-4">
+        <div>
+          <p class="text-sm font-semibold" style="color: var(--text)">Interest Projection</p>
+          <p class="text-xs mt-0.5" style="color: var(--text-muted)">Compares cumulative interest with your current payment vs an extra monthly principal payment.</p>
+        </div>
+        <div class="grid grid-cols-2 gap-2 w-full lg:w-auto lg:min-w-[380px]">
+          <div>
+            <p class="text-[11px] mb-1" style="color: var(--text-muted)">Additional payment ($/mo)</p>
+            <InputText
+              v-model.number="additionalPrincipalPayment"
+              type="number"
+              min="0"
+              step="1"
+              class="w-full"
+              placeholder="0"
+            />
+          </div>
+          <div>
+            <p class="text-[11px] mb-1" style="color: var(--text-muted)">Projection horizon</p>
+            <select
+              v-model.number="projectionMonths"
+              class="w-full px-2 py-2 rounded-lg text-xs"
+              style="background: var(--surface-2); border: 1px solid var(--border); color: var(--text)"
+            >
+              <option :value="60">5 years</option>
+              <option :value="120">10 years</option>
+              <option :value="180">15 years</option>
+              <option :value="240">20 years</option>
+              <option :value="360">30 years</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4" v-if="!interestProjection.error">
+        <div class="rounded-lg p-3" style="background: var(--surface-2)">
+          <p class="text-xs" style="color: var(--text-muted)">Projected Interest (current)</p>
+          <p class="text-sm font-bold mt-0.5" style="color: var(--text)">${{ fmt(interestProjection.baseline.totalInterestProjected) }}</p>
+          <p class="text-[11px] mt-1" style="color: var(--text-muted)">Payoff: {{ payoffLabel(interestProjection.baseline.payoffMonth) }}</p>
+        </div>
+        <div class="rounded-lg p-3" style="background: var(--surface-2)">
+          <p class="text-xs" style="color: var(--text-muted)">Projected Interest (with extra)</p>
+          <p class="text-sm font-bold mt-0.5" style="color: var(--text)">${{ fmt(interestProjection.withExtra.totalInterestProjected) }}</p>
+          <p class="text-[11px] mt-1" style="color: var(--text-muted)">Payoff: {{ payoffLabel(interestProjection.withExtra.payoffMonth) }}</p>
+        </div>
+        <div class="rounded-lg p-3" style="background: var(--surface-2)">
+          <p class="text-xs" style="color: var(--text-muted)">Projected Interest Saved</p>
+          <p class="text-sm font-bold mt-0.5" style="color: var(--mint)">${{ fmt(projectedInterestSavings) }}</p>
+          <p class="text-[11px] mt-1" style="color: var(--text-muted)">Window: {{ Math.round(projectionMonths / 12) }} years</p>
+        </div>
+      </div>
+
+      <div v-if="interestProjection.error" class="h-72 rounded-lg border flex items-center justify-center text-xs px-4 text-center" style="border-color: var(--border); color: var(--text-muted)">
+        {{ interestProjection.error }}
+      </div>
+      <div v-else-if="interestProjectionChartData.labels.length" class="h-72">
+        <Line :data="interestProjectionChartData" :options="interestProjectionChartOptions" />
+      </div>
+      <div v-else class="h-72 rounded-lg border flex items-center justify-center text-xs" style="border-color: var(--border); color: var(--text-muted)">
+        No projection available.
+      </div>
+    </div>
+
     <!-- Embedded plans + todos -->
     <div class="rounded-xl border p-4 mb-8" style="background: var(--surface); border-color: var(--border)">
       <div class="flex items-center justify-between mb-4">
@@ -539,6 +604,8 @@ const editingCurrentValue = ref(false)
 const currentValueDraft = ref('')
 const savingCurrentValue = ref(false)
 const currentValueStatus = ref('')
+const additionalPrincipalPayment = ref(0)
+const projectionMonths = ref(120)
 const historyMonths = ref(24)
 const transactions = ref([])
 const txnSummary = ref(null)
@@ -599,6 +666,180 @@ const displayEquity = computed(() => {
   return analytics.value?.current?.equity ?? property.value?.equity ?? null
 })
 
+const fmtMonthLabel = (monthOffset) => {
+  const d = new Date()
+  d.setDate(1)
+  d.setMonth(d.getMonth() + monthOffset)
+  return d.toLocaleString('en-US', { month: 'short', year: '2-digit' })
+}
+
+const buildInterestSchedule = ({
+  startingBalance,
+  annualRatePct,
+  monthlyPayment,
+  additionalPayment,
+  monthsToProject,
+}) => {
+  const labels = Array.from({ length: monthsToProject }, (_, i) => fmtMonthLabel(i))
+  const cumulativeInterest = []
+
+  let balance = startingBalance
+  let totalInterest = 0
+  let payoffMonth = null
+
+  if (annualRatePct <= 0) {
+    const totalMonthlyPayment = monthlyPayment + additionalPayment
+    if (totalMonthlyPayment <= 0) {
+      return { labels, cumulativeInterest: [], totalInterestProjected: 0, payoffMonth: null }
+    }
+
+    for (let month = 1; month <= monthsToProject; month += 1) {
+      if (balance <= 0) {
+        cumulativeInterest.push(totalInterest)
+        if (payoffMonth == null) payoffMonth = month - 1
+        continue
+      }
+      balance = Math.max(balance - totalMonthlyPayment, 0)
+      cumulativeInterest.push(totalInterest)
+      if (balance <= 0 && payoffMonth == null) payoffMonth = month
+    }
+
+    return {
+      labels,
+      cumulativeInterest,
+      totalInterestProjected: cumulativeInterest.at(-1) ?? 0,
+      payoffMonth,
+    }
+  }
+
+  const monthlyRate = annualRatePct / 100 / 12
+  const totalMonthlyPayment = monthlyPayment + additionalPayment
+
+  if (totalMonthlyPayment <= startingBalance * monthlyRate) {
+    return {
+      labels,
+      cumulativeInterest: [],
+      totalInterestProjected: 0,
+      payoffMonth: null,
+      error: 'Monthly payment is too low to amortize this loan at the current rate. Increase payment or adjust loan terms.',
+    }
+  }
+
+  for (let month = 1; month <= monthsToProject; month += 1) {
+    if (balance <= 0) {
+      cumulativeInterest.push(totalInterest)
+      if (payoffMonth == null) payoffMonth = month - 1
+      continue
+    }
+
+    const interestForMonth = balance * monthlyRate
+    let principalForMonth = totalMonthlyPayment - interestForMonth
+    if (principalForMonth > balance) principalForMonth = balance
+
+    totalInterest += interestForMonth
+    balance = Math.max(balance - principalForMonth, 0)
+    cumulativeInterest.push(totalInterest)
+
+    if (balance <= 0 && payoffMonth == null) payoffMonth = month
+  }
+
+  return {
+    labels,
+    cumulativeInterest,
+    totalInterestProjected: cumulativeInterest.at(-1) ?? 0,
+    payoffMonth,
+  }
+}
+
+const interestProjection = computed(() => {
+  const balance = Number(property.value?.mortgage_balance)
+  const rate = Number(property.value?.mortgage_rate)
+  const payment = Number(property.value?.mortgage_payment)
+  const extraPayment = Math.max(Number(additionalPrincipalPayment.value) || 0, 0)
+
+  if (!Number.isFinite(balance) || balance <= 0) {
+    return { error: 'Add a mortgage balance to project interest.', baseline: null, withExtra: null, labels: [] }
+  }
+  if (!Number.isFinite(rate) || rate < 0) {
+    return { error: 'Add a valid mortgage rate to project interest.', baseline: null, withExtra: null, labels: [] }
+  }
+  if (!Number.isFinite(payment) || payment <= 0) {
+    return { error: 'Add a valid monthly payment to project interest.', baseline: null, withExtra: null, labels: [] }
+  }
+
+  const baseline = buildInterestSchedule({
+    startingBalance: balance,
+    annualRatePct: rate,
+    monthlyPayment: payment,
+    additionalPayment: 0,
+    monthsToProject: projectionMonths.value,
+  })
+  if (baseline.error) {
+    return { error: baseline.error, baseline: null, withExtra: null, labels: [] }
+  }
+
+  const withExtra = buildInterestSchedule({
+    startingBalance: balance,
+    annualRatePct: rate,
+    monthlyPayment: payment,
+    additionalPayment: extraPayment,
+    monthsToProject: projectionMonths.value,
+  })
+  if (withExtra.error) {
+    return { error: withExtra.error, baseline: null, withExtra: null, labels: [] }
+  }
+
+  return {
+    error: null,
+    labels: baseline.labels,
+    baseline,
+    withExtra,
+  }
+})
+
+const projectedInterestSavings = computed(() => {
+  if (interestProjection.value.error || !interestProjection.value.baseline || !interestProjection.value.withExtra) return 0
+  return Math.max(
+    Number(interestProjection.value.baseline.totalInterestProjected || 0) - Number(interestProjection.value.withExtra.totalInterestProjected || 0),
+    0,
+  )
+})
+
+const payoffLabel = (monthCount) => {
+  if (monthCount == null) return `>${projectionMonths.value} months`
+  if (monthCount <= 0) return 'Paid off'
+  const years = Math.floor(monthCount / 12)
+  const months = monthCount % 12
+  if (years === 0) return `${months} mo`
+  if (months === 0) return `${years} yr`
+  return `${years} yr ${months} mo`
+}
+
+const interestProjectionChartData = computed(() => {
+  if (interestProjection.value.error) return { labels: [], datasets: [] }
+  return {
+    labels: interestProjection.value.labels,
+    datasets: [
+      {
+        label: 'Cumulative Interest (Current Payment)',
+        data: interestProjection.value.baseline?.cumulativeInterest || [],
+        borderColor: '#f87171',
+        backgroundColor: 'rgba(248,113,113,0.15)',
+        pointRadius: 0,
+        tension: 0.25,
+      },
+      {
+        label: 'Cumulative Interest (With Extra Payment)',
+        data: interestProjection.value.withExtra?.cumulativeInterest || [],
+        borderColor: '#3DDBB8',
+        backgroundColor: 'rgba(61,219,184,0.15)',
+        pointRadius: 0,
+        tension: 0.25,
+      },
+    ],
+  }
+})
+
 const startEditCurrentValue = () => {
   const startingValue = property.value?.current_value ?? analytics.value?.current?.effective_current_value ?? ''
   currentValueDraft.value = startingValue === '' ? '' : String(startingValue)
@@ -653,6 +894,37 @@ const lineChartOptions = computed(() => ({
   scales: {
     x: {
       ticks: { color: '#94A3B8' },
+      grid: { display: false },
+    },
+    y: {
+      ticks: {
+        color: '#94A3B8',
+        callback: (value) => `$${Number(value).toLocaleString('en-US')}`,
+      },
+      grid: { color: 'rgba(148,163,184,0.15)' },
+    },
+  },
+}))
+
+const interestProjectionChartOptions = computed(() => ({
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: {
+      labels: { color: '#94A3B8', boxWidth: 10, boxHeight: 10 },
+    },
+    tooltip: {
+      callbacks: {
+        label: (ctx) => `${ctx.dataset.label}: $${Number(ctx.parsed.y || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`,
+      },
+    },
+  },
+  scales: {
+    x: {
+      ticks: {
+        color: '#94A3B8',
+        maxTicksLimit: 10,
+      },
       grid: { display: false },
     },
     y: {
