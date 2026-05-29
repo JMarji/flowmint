@@ -6,8 +6,49 @@
         <i class="pi pi-arrow-left text-sm"></i>
       </RouterLink>
       <div>
-        <h1 class="text-xl font-bold" style="color: var(--text)">{{ property?.address || '…' }}</h1>
+        <template v-if="editingPropertyTitle">
+          <div class="flex items-center gap-2">
+            <InputText
+              v-model="propertyTitleDraft"
+              class="w-[320px] max-w-full"
+              placeholder="Enter property title or address"
+              @keydown.enter.prevent="savePropertyTitle"
+              @keydown.esc.prevent="cancelEditPropertyTitle"
+            />
+            <Button
+              @click="savePropertyTitle"
+              size="small"
+              class="p-button-primary"
+              label="Save"
+              :loading="savingPropertyTitle"
+              :disabled="savingPropertyTitle"
+            />
+            <Button
+              @click="cancelEditPropertyTitle"
+              size="small"
+              severity="secondary"
+              text
+              label="Cancel"
+              :disabled="savingPropertyTitle"
+            />
+          </div>
+        </template>
+        <template v-else>
+          <div class="flex items-center gap-2">
+            <h1 class="text-xl font-bold" style="color: var(--text)">{{ property?.address || '…' }}</h1>
+            <button
+              v-if="property"
+              @click="startEditPropertyTitle"
+              class="p-1 rounded hover:opacity-80"
+              title="Edit property title"
+              style="color: var(--text-muted); background: var(--surface-2)"
+            >
+              <i class="pi pi-pencil text-xs"></i>
+            </button>
+          </div>
+        </template>
         <p class="text-xs" style="color: var(--text-muted)">{{ [property?.city, property?.state].filter(Boolean).join(', ') }}</p>
+        <p v-if="propertyTitleStatus" class="text-[11px] mt-1" style="color: var(--text-muted)">{{ propertyTitleStatus }}</p>
       </div>
     </div>
 
@@ -95,19 +136,17 @@
             <button v-if="property.mortgage_account_id" @click="unlinkMortgage" title="Unlink" style="color: var(--text-muted)" class="hover:opacity-70">
               <i class="pi pi-times text-xs"></i>
             </button>
-            <template v-else>
-              <button @click="showLinkMortgage = true" title="Link to Plaid" style="color: var(--text-muted)" class="hover:opacity-70">
-                <i class="pi pi-link text-xs"></i>
-              </button>
-              <label :title="importingCsv ? 'Uploading…' : 'Import CSV or JSON'" style="color: var(--text-muted)" class="hover:opacity-70 cursor-pointer">
-                <input type="file" accept=".csv,.json,text/csv,application/json" class="hidden" @change="handleImportFile" :disabled="importingCsv" />
-                <i v-if="importingCsv" class="pi pi-spin pi-spinner text-xs"></i>
-                <i v-else class="pi pi-file-import text-xs"></i>
-              </label>
-              <button @click="showCsvHelp = true" title="CSV format help" style="color: var(--text-muted)" class="hover:opacity-70">
-                <i class="pi pi-question-circle text-xs"></i>
-              </button>
-            </template>
+            <button v-else @click="showLinkMortgage = true" title="Link to Plaid" style="color: var(--text-muted)" class="hover:opacity-70">
+              <i class="pi pi-link text-xs"></i>
+            </button>
+            <label :title="importingCsv ? 'Uploading…' : 'Import CSV or JSON'" style="color: var(--text-muted)" class="hover:opacity-70 cursor-pointer">
+              <input type="file" accept=".csv,.json,text/csv,application/json" class="hidden" @change="handleImportFile" :disabled="importingCsv" />
+              <i v-if="importingCsv" class="pi pi-spin pi-spinner text-xs"></i>
+              <i v-else class="pi pi-file-import text-xs"></i>
+            </label>
+            <button @click="showCsvHelp = true" title="CSV format help" style="color: var(--text-muted)" class="hover:opacity-70">
+              <i class="pi pi-question-circle text-xs"></i>
+            </button>
           </div>
         </div>
         <p class="text-lg font-bold" style="color: var(--text)">${{ fmt(property.mortgage_balance) }}</p>
@@ -679,6 +718,10 @@ const editingCurrentValue = ref(false)
 const currentValueDraft = ref('')
 const savingCurrentValue = ref(false)
 const currentValueStatus = ref('')
+const editingPropertyTitle = ref(false)
+const propertyTitleDraft = ref('')
+const savingPropertyTitle = ref(false)
+const propertyTitleStatus = ref('')
 const additionalPrincipalPayment = ref(0)
 const lumpSumPayment = ref(0)
 const projectionInterestRate = ref('')
@@ -1172,6 +1215,39 @@ const startEditCurrentValue = () => {
   currentValueDraft.value = startingValue === '' ? '' : String(startingValue)
   currentValueStatus.value = ''
   editingCurrentValue.value = true
+}
+
+const startEditPropertyTitle = () => {
+  propertyTitleDraft.value = property.value?.address || ''
+  propertyTitleStatus.value = ''
+  editingPropertyTitle.value = true
+}
+
+const cancelEditPropertyTitle = () => {
+  editingPropertyTitle.value = false
+  propertyTitleDraft.value = ''
+  propertyTitleStatus.value = ''
+}
+
+const savePropertyTitle = async () => {
+  const nextTitle = (propertyTitleDraft.value || '').trim()
+  if (!nextTitle) {
+    propertyTitleStatus.value = 'Enter a property title or address before saving'
+    return
+  }
+
+  savingPropertyTitle.value = true
+  propertyTitleStatus.value = ''
+  try {
+    const res = await api.put(`/api/properties/${propertyId}`, { address: nextTitle })
+    property.value = res.data
+    editingPropertyTitle.value = false
+    propertyTitleStatus.value = 'Property title saved'
+  } catch (err) {
+    propertyTitleStatus.value = err.response?.data?.detail || 'Could not save property title'
+  } finally {
+    savingPropertyTitle.value = false
+  }
 }
 
 const cancelEditCurrentValue = () => {
