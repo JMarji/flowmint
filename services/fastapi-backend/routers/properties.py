@@ -1005,7 +1005,8 @@ def _map_json_to_mortgage(data: dict) -> dict:
     if data.get("InterestRate") is not None:
         r = float(data["InterestRate"])
         result["rate"] = round(r * 100, 4) if r < 1 else r
-    for key in ("MonthlyPayment", "TotalPayment"):
+    # Prefer principal+interest payment for amortization math when available.
+    for key in ("PIPayment", "MonthlyPayment", "TotalPayment"):
         if data.get(key) is not None:
             result["payment"] = float(data[key])
             break
@@ -1038,7 +1039,7 @@ def _map_json_to_mortgage(data: dict) -> dict:
                 result["rate"] = round(r * 100, 4) if r < 1 else r
                 break
     if "payment" not in result:
-        for k in ("monthlyPayment", "monthly_payment", "totalPayment",
+        for k in ("piPayment", "pi_payment", "monthlyPayment", "monthly_payment", "totalPayment",
                   "total_payment", "payment", "regularPayment"):
             if data.get(k) is not None:
                 result["payment"] = float(data[k])
@@ -1117,10 +1118,20 @@ _COL_ALIASES = {
     "principalpaymentamount": "principal",
     "interest": "interest", "interest_paid": "interest",
     "interestpaymentamount": "interest",
+    "escrow": "escrow", "escrow_payment": "escrow",
+    "escrowmonthlypaymentamount": "escrow",
+    "fees": "fees", "fee": "fees", "fee_amount": "fees",
+    "feesummarytotalfeesamount": "fees",
     "rate": "rate", "interest_rate": "rate", "apr": "rate",
     "date": "date", "payment_date": "date", "statement_date": "date",
     "monetaryeventapplieddate": "date", "monetaryeventeffectivedate": "date",
     "monetaryeventpaymentduedate": "date",
+    "type": "event_type", "event_type": "event_type",
+    "monetaryeventtype": "event_type",
+    "event_type_description": "event_type_description",
+    "monetaryeventtypedescription": "event_type_description",
+    "event_type_text": "event_type_text",
+    "monetaryeventtypetext": "event_type_text",
 }
 
 
@@ -1153,6 +1164,44 @@ def _parse_float(val) -> Optional[float]:
         return float(cleaned)
     except ValueError:
         return None
+
+
+def _derive_pi_payment(payment: Optional[float], principal: Optional[float], interest: Optional[float],
+                       escrow: Optional[float], fees: Optional[float]) -> Optional[float]:
+    """Return principal+interest payment when available, else best fallback."""
+    if principal is not None and interest is not None:
+        pi = principal + interest
+        if pi > 0:
+            return pi
+
+    if payment is None or payment <= 0:
+        return None
+
+    # Some servicer exports place total cash paid here; remove known non-P&I
+    # components when they are present to derive the amortizing payment.
+    candidate = payment
+    if escrow is not None and escrow > 0:
+        candidate -= escrow
+    if fees is not None and fees > 0:
+        candidate -= fees
+    if candidate > 0:
+        return candidate
+
+    return payment
+
+
+def _derive_annual_rate(balance: Optional[float], principal: Optional[float],
+                        interest: Optional[float]) -> Optional[float]:
+    """Estimate annual mortgage rate (%) from a statement row when rate is absent."""
+    if balance is None or interest is None:
+        return None
+    prior_balance = balance + max(principal or 0.0, 0.0)
+    if prior_balance <= 0 or interest <= 0:
+        return None
+    annual_rate = (interest / prior_balance) * 12 * 100
+    if 0 < annual_rate < 100:
+        return round(annual_rate, 4)
+    return None
 
 
 def _verify_property_csv_owner(property_id: int, user_id: int) -> bool:
@@ -1222,12 +1271,19 @@ async def import_mortgage_csv(
     balance = _parse_float(latest.get("balance"))
     rate = _parse_float(latest.get("rate"))
     payment = _parse_float(latest.get("payment"))
+    latest_principal = _parse_float(latest.get("principal"))
+    latest_interest = _parse_float(latest.get("interest"))
+    latest_escrow = _parse_float(latest.get("escrow"))
+    latest_fees = _parse_float(latest.get("fees"))
+    if rate is None:
+        rate = _derive_annual_rate(balance, latest_principal, latest_interest)
+    payment_pi = _derive_pi_payment(payment, latest_principal, latest_interest, latest_escrow, latest_fees)
     if balance is not None:
         prop_updates["mortgage_balance"] = balance
     if rate is not None:
         prop_updates["mortgage_rate"] = rate
-    if payment is not None:
-        prop_updates["mortgage_payment"] = payment
+    if payment_pi is not None:
+        prop_updates["mortgage_payment"] = payment_pi
 
     if prop_updates:
         cols = ", ".join(f"{k} = %s" for k in prop_updates)
@@ -1239,34 +1295,60 @@ async def import_mortgage_csv(
                 )
                 conn.commit()
 
-    # Import payment transactions, skipping already-recorded dates
+    has_principal_column = "principal" in col_map.values()
+    has_interest_column = "interest" in col_map.values()
+
+    # Import payment transactions, skipping already-recorded entries
     imported = 0
     skipped = 0
 
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT date FROM flowmint.property_transactions
+                """SELECT date, amount, COALESCE(description, '')
+                   FROM flowmint.property_transactions
                    WHERE property_id = %s AND category = 'mortgage' AND type = 'expense'""",
                 (property_id,)
             )
-            existing_dates = {str(r[0]) for r in cur.fetchall()}
+            existing_keys = {
+                f"{str(r[0])}|{float(r[1]):.2f}|{r[2]}"
+                for r in cur.fetchall()
+            }
 
             for row in rows:
                 pmt = _parse_float(row.get("payment"))
                 date_str = row.get("date", "").strip()
                 if not pmt or not date_str:
                     continue
-                if date_str in existing_dates:
-                    skipped += 1
-                    continue
 
                 principal = _parse_float(row.get("principal"))
                 interest = _parse_float(row.get("interest"))
-                if principal is not None and interest is not None:
-                    desc = f"Principal ${principal:,.2f} · Interest ${interest:,.2f}"
-                else:
-                    desc = None
+
+                # If principal/interest columns exist, only treat rows with a
+                # positive P&I component as mortgage payments.
+                if has_principal_column and has_interest_column:
+                    pi_amount = (principal or 0.0) + (interest or 0.0)
+                    if pi_amount <= 0:
+                        skipped += 1
+                        continue
+
+                parts = []
+                if principal is not None:
+                    parts.append(f"Principal ${principal:,.2f}")
+                if interest is not None:
+                    parts.append(f"Interest ${interest:,.2f}")
+                escrow = _parse_float(row.get("escrow"))
+                if escrow is not None:
+                    parts.append(f"Escrow ${escrow:,.2f}")
+                fees = _parse_float(row.get("fees"))
+                if fees is not None:
+                    parts.append(f"Fees ${fees:,.2f}")
+                desc = " · ".join(parts) if parts else None
+
+                dedupe_key = f"{date_str}|{pmt:.2f}|{desc or ''}"
+                if dedupe_key in existing_keys:
+                    skipped += 1
+                    continue
 
                 cur.execute(
                     """INSERT INTO flowmint.property_transactions
@@ -1274,7 +1356,7 @@ async def import_mortgage_csv(
                        VALUES (%s, 'expense', %s, %s, 'mortgage', %s)""",
                     (property_id, pmt, date_str, desc)
                 )
-                existing_dates.add(date_str)
+                existing_keys.add(dedupe_key)
                 imported += 1
 
             conn.commit()
