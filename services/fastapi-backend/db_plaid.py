@@ -377,6 +377,106 @@ def get_transactions_for_user(
     return {"transactions": txns, "total": total}
 
 
+def get_vendor_summary_for_user(
+    user_id: int,
+    account_id: Optional[int] = None,
+    category: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    search: Optional[str] = None,
+    top_n: int = 50,
+) -> Dict[str, Any]:
+    """Return vendor-level spend aggregates across all filtered transactions."""
+    conditions = [
+        "bi.user_id = %s",
+    ]
+    params: list = [user_id]
+
+    if account_id:
+        conditions.append("ba.id = %s")
+        params.append(account_id)
+    if category:
+        conditions.append("(t.category_override = %s OR (t.category_override IS NULL AND t.category_primary = %s))")
+        params.extend([category, category])
+    if start_date:
+        conditions.append("t.date >= %s")
+        params.append(start_date)
+    if end_date:
+        conditions.append("t.date <= %s")
+        params.append(end_date)
+    if search:
+        conditions.append("(LOWER(COALESCE(t.name, '')) LIKE %s OR LOWER(COALESCE(t.merchant_name, '')) LIKE %s)")
+        like = f"%{search.lower()}%"
+        params.extend([like, like])
+
+    where = " AND ".join(conditions)
+
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    COALESCE(NULLIF(TRIM(COALESCE(t.merchant_name, t.name, '')), ''), 'Unknown Vendor') AS vendor_name,
+                    COUNT(*) AS txn_count,
+                    COALESCE(SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END), 0) AS outflow,
+                    MAX(t.logo_url) FILTER (WHERE t.logo_url IS NOT NULL) AS logo_url
+                FROM flowmint.transactions t
+                JOIN flowmint.bank_accounts ba ON t.account_id = ba.id
+                JOIN flowmint.bank_items bi ON ba.item_id = bi.id
+                WHERE {where}
+                GROUP BY COALESCE(NULLIF(TRIM(COALESCE(t.merchant_name, t.name, '')), ''), 'Unknown Vendor')
+                ORDER BY outflow DESC, txn_count DESC, vendor_name ASC
+                LIMIT %s
+                """,
+                params + [top_n]
+            )
+            rows = cur.fetchall()
+
+            cur.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM (
+                    SELECT 1
+                    FROM flowmint.transactions t
+                    JOIN flowmint.bank_accounts ba ON t.account_id = ba.id
+                    JOIN flowmint.bank_items bi ON ba.item_id = bi.id
+                    WHERE {where}
+                    GROUP BY COALESCE(NULLIF(TRIM(COALESCE(t.merchant_name, t.name, '')), ''), 'Unknown Vendor')
+                ) vendor_groups
+                """,
+                params
+            )
+            vendor_count = int(cur.fetchone()[0] or 0)
+
+            cur.execute(
+                f"""
+                SELECT COALESCE(SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END), 0)
+                FROM flowmint.transactions t
+                JOIN flowmint.bank_accounts ba ON t.account_id = ba.id
+                JOIN flowmint.bank_items bi ON ba.item_id = bi.id
+                WHERE {where}
+                """,
+                params
+            )
+            total_outflow = float(cur.fetchone()[0] or 0)
+
+    vendors = [
+        {
+            "name": r[0],
+            "count": int(r[1]),
+            "outflow": float(r[2] or 0),
+            "logo_url": r[3],
+        }
+        for r in rows
+    ]
+
+    return {
+        "vendors": vendors,
+        "vendor_count": vendor_count,
+        "total_outflow": total_outflow,
+    }
+
+
 def override_transaction_category(txn_id: int, user_id: int, category: str) -> bool:
     with get_pool().connection() as conn:
         with conn.cursor() as cur:

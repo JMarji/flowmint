@@ -33,6 +33,28 @@ def list_transactions(
     )
 
 
+@router.get("/transactions/vendors-summary")
+def vendor_summary(
+    account_id: Optional[int] = Query(None, ge=1),
+    category: Optional[str] = Query(None),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    top_n: int = Query(50, ge=1, le=200),
+    current_user: dict = Depends(get_current_user)
+):
+    """Return vendor-level spend aggregates across all filtered transactions."""
+    return db_plaid.get_vendor_summary_for_user(
+        user_id=current_user["id"],
+        account_id=account_id,
+        category=category,
+        start_date=start_date,
+        end_date=end_date,
+        search=search,
+        top_n=top_n,
+    )
+
+
 @router.patch("/transactions/{txn_id}/category")
 def override_category(txn_id: int, body: CategoryOverride, current_user: dict = Depends(get_current_user)):
     updated = db_plaid.override_transaction_category(txn_id, current_user["id"], body.category)

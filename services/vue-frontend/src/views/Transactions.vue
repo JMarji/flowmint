@@ -78,7 +78,14 @@
     </div>
 
     <!-- Vendor aggregate -->
-    <VendorAggregation v-if="!loading && transactions.length" :transactions="transactions" class="mt-5" />
+    <VendorAggregation
+      v-if="!loading && (transactions.length || vendorSummary.vendors.length)"
+      :vendors="vendorSummary.vendors"
+      :vendor-count="vendorSummary.vendor_count"
+      :total-outflow="vendorSummary.total_outflow"
+      scope-label="all filtered transactions"
+      class="mt-5"
+    />
 
     <!-- Pagination -->
     <div v-if="total > limit" class="flex justify-center gap-3 mt-5">
@@ -95,6 +102,7 @@ import InputText from 'primevue/inputtext'
 import Button from 'primevue/button'
 import api from '@/utils/api'
 import VendorAggregation from '@/components/transactions/VendorAggregation.vue'
+import { usePlaidSync } from '@/composables/usePlaidSync'
 
 const CATEGORIES = [
   { value: 'FOOD_AND_DRINK', label: 'Food & Drink' },
@@ -120,22 +128,49 @@ const startDate = ref('')
 const endDate = ref('')
 const limit = ref(25)
 const offset = ref(0)
+const vendorSummary = ref({ vendors: [], vendor_count: 0, total_outflow: 0 })
 let searchTimer = null
 const { syncIfStale } = usePlaidSync()
 
 const load = async () => {
   loading.value = true
   try {
-    const params = new URLSearchParams({
+    const listParams = new URLSearchParams({
       limit: limit.value,
       offset: offset.value,
     })
-    if (accountFilter.value) params.set('account_id', accountFilter.value)
-    if (categoryFilter.value) params.set('category', categoryFilter.value)
-    if (startDate.value) params.set('start_date', startDate.value)
-    if (endDate.value) params.set('end_date', endDate.value)
+    const summaryParams = new URLSearchParams({ top_n: '50' })
 
-    const res = await api.get(`/api/transactions?${params}`)
+    if (accountFilter.value) {
+      listParams.set('account_id', accountFilter.value)
+      summaryParams.set('account_id', accountFilter.value)
+    }
+    if (categoryFilter.value) {
+      listParams.set('category', categoryFilter.value)
+      summaryParams.set('category', categoryFilter.value)
+    }
+    if (startDate.value) {
+      listParams.set('start_date', startDate.value)
+      summaryParams.set('start_date', startDate.value)
+    }
+    if (endDate.value) {
+      listParams.set('end_date', endDate.value)
+      summaryParams.set('end_date', endDate.value)
+    }
+    if (search.value.trim()) {
+      summaryParams.set('search', search.value.trim())
+    }
+
+    const [listResult, summaryResult] = await Promise.allSettled([
+      api.get(`/api/transactions?${listParams}`),
+      api.get(`/api/transactions/vendors-summary?${summaryParams}`),
+    ])
+
+    if (listResult.status !== 'fulfilled') {
+      throw listResult.reason
+    }
+
+    const res = listResult.value
     let txns = res.data.transactions
     if (search.value.trim()) {
       const q = search.value.toLowerCase()
@@ -143,8 +178,19 @@ const load = async () => {
     }
     transactions.value = txns
     total.value = res.data.total
+
+    if (summaryResult.status === 'fulfilled') {
+      vendorSummary.value = {
+        vendors: summaryResult.value?.data?.vendors || [],
+        vendor_count: Number(summaryResult.value?.data?.vendor_count) || 0,
+        total_outflow: Number(summaryResult.value?.data?.total_outflow) || 0,
+      }
+    } else {
+      vendorSummary.value = { vendors: [], vendor_count: 0, total_outflow: 0 }
+    }
   } catch (e) {
     transactions.value = []
+    vendorSummary.value = { vendors: [], vendor_count: 0, total_outflow: 0 }
   } finally {
     loading.value = false
   }

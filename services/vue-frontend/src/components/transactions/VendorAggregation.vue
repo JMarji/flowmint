@@ -4,7 +4,7 @@
       <div>
         <h2 class="text-base font-semibold" style="color: var(--text)">Vendor Summary</h2>
         <p class="text-xs" style="color: var(--text-muted)">
-          Top {{ vendorRows.length }} vendors from this page ({{ vendorCount }} total)
+          Top {{ vendorRows.length }} vendors from {{ scopeLabel }} ({{ vendorCount }} total)
         </p>
       </div>
       <div class="text-right">
@@ -13,8 +13,20 @@
       </div>
     </header>
 
-    <div v-if="vendorRows.length === 0" class="rounded-lg border border-dashed p-4 text-xs" style="border-color: var(--border); color: var(--text-muted)">
-      No vendor data available for this page.
+    <div v-if="loading" class="space-y-2">
+      <div
+        v-for="i in 4"
+        :key="i"
+        class="rounded-lg border px-3 py-2 animate-pulse"
+        style="border-color: var(--border); background: var(--surface-2)"
+      >
+        <div class="h-3 rounded w-1/3" style="background: var(--surface)"></div>
+        <div class="h-2 rounded w-1/4 mt-2" style="background: var(--surface)"></div>
+      </div>
+    </div>
+
+    <div v-else-if="vendorRows.length === 0" class="rounded-lg border border-dashed p-4 text-xs" style="border-color: var(--border); color: var(--text-muted)">
+      No vendor data available for the selected filters.
     </div>
 
     <div v-else class="space-y-2">
@@ -61,52 +73,44 @@
 import { computed } from 'vue'
 
 const props = defineProps({
-  transactions: {
+  vendors: {
     type: Array,
     default: () => [],
+  },
+  vendorCount: {
+    type: Number,
+    default: 0,
+  },
+  totalOutflow: {
+    type: Number,
+    default: 0,
   },
   maxRows: {
     type: Number,
     default: 8,
   },
+  scopeLabel: {
+    type: String,
+    default: 'all filtered transactions',
+  },
+  loading: {
+    type: Boolean,
+    default: false,
+  },
 })
 
-const vendorAggregates = computed(() => {
-  const byVendor = new Map()
+const normalizedVendors = computed(() =>
+  props.vendors.map((vendor) => ({
+    name: vendor.name || 'Unknown Vendor',
+    count: Number(vendor.count) || 0,
+    outflow: Number(vendor.outflow) || 0,
+    logo: vendor.logo || vendor.logo_url || null,
+  }))
+)
 
-  for (const txn of props.transactions) {
-    const name = (txn.merchant_name || txn.name || 'Unknown Vendor').trim() || 'Unknown Vendor'
-    const amount = Number(txn.amount) || 0
-
-    if (!byVendor.has(name)) {
-      byVendor.set(name, {
-        name,
-        count: 0,
-        outflow: 0,
-        logo: txn.logo_url || null,
-      })
-    }
-
-    const row = byVendor.get(name)
-    row.count += 1
-
-    if (!row.logo && txn.logo_url) {
-      row.logo = txn.logo_url
-    }
-
-    // Plaid expense transactions are positive amounts; credits are negative.
-    if (amount > 0) {
-      row.outflow += amount
-    }
-  }
-
-  return Array.from(byVendor.values())
-    .sort((a, b) => (b.outflow - a.outflow) || (b.count - a.count) || a.name.localeCompare(b.name))
-})
-
-const vendorRows = computed(() => vendorAggregates.value.slice(0, props.maxRows))
-const vendorCount = computed(() => vendorAggregates.value.length)
-const totalOutflow = computed(() => vendorAggregates.value.reduce((sum, row) => sum + row.outflow, 0))
+const vendorRows = computed(() => normalizedVendors.value.slice(0, props.maxRows))
+const vendorCount = computed(() => props.vendorCount || normalizedVendors.value.length)
+const totalOutflow = computed(() => Number(props.totalOutflow) || 0)
 
 const formatCurrency = (value) =>
   Number(value || 0).toLocaleString('en-US', {
