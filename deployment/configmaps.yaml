@@ -136,3 +136,18 @@ data:
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         UNIQUE(user_id, snapshot_date)
     );
+
+    CREATE TABLE IF NOT EXISTS flowmint.plans (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES flowmint.users(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS flowmint.plan_messages (
+        id SERIAL PRIMARY KEY,
+        plan_id INTEGER NOT NULL REFERENCES flowmint.plans(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+        content TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );

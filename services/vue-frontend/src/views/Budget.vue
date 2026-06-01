@@ -1,5 +1,5 @@
 <template>
-  <div class="p-6 max-w-4xl mx-auto">
+  <div class="p-6 max-w-6xl mx-auto">
     <div class="flex items-center justify-between mb-6">
       <div>
         <h1 class="text-2xl font-bold" style="color: var(--text)">Budget</h1>
@@ -26,6 +26,74 @@
       <div class="rounded-xl border p-4 text-center" style="background: var(--surface); border-color: var(--border)">
         <p class="text-xs mb-1" style="color: var(--text-muted)">Remaining</p>
         <p class="text-lg font-bold" :style="totalRemaining < 0 ? 'color:#f87171' : 'color: var(--mint)'">${{ fmt(totalRemaining) }}</p>
+      </div>
+    </div>
+
+    <!-- Transaction insights -->
+    <div class="rounded-xl border p-4 mb-4" style="background: var(--surface); border-color: var(--border)">
+      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+          <p class="text-sm font-semibold" style="color: var(--text)">Transaction Insights</p>
+          <p class="text-xs mt-1" style="color: var(--text-muted)">Showing {{ selectedAccountLabel }} across {{ historyWindowLabel }}</p>
+        </div>
+        <div class="min-w-64">
+          <label class="block text-xs mb-1.5" style="color: var(--text-muted)">Filter by account</label>
+          <select v-model="selectedAccountId" class="w-full px-3 py-2 rounded-lg text-sm" style="background: var(--surface-2); border: 1px solid var(--border); color: var(--text)">
+            <option value="">All linked accounts</option>
+            <option v-for="acct in accountOptions" :key="acct.id" :value="String(acct.id)">
+              {{ acct.institution_name }} · {{ acct.name }}
+            </option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="loadingInsights" class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+      <div v-for="i in 4" :key="i" class="rounded-xl border p-4 animate-pulse" style="background: var(--surface); border-color: var(--border)">
+        <div class="h-4 rounded w-1/3 mb-4" style="background: var(--surface-2)"></div>
+        <div class="h-64 rounded" style="background: var(--surface-2)"></div>
+      </div>
+    </div>
+
+    <div v-else-if="hasHistoryInsights" class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+      <div class="rounded-xl border p-4" style="background: var(--surface); border-color: var(--border)">
+        <div class="flex items-center justify-between mb-3">
+          <p class="text-sm font-semibold" style="color: var(--text)">Monthly Spending Trend</p>
+          <p class="text-xs" style="color: var(--text-muted)">Expenses only</p>
+        </div>
+        <div class="h-72">
+          <Line :data="spendTrendChartData" :options="lineChartOptions" />
+        </div>
+      </div>
+
+      <div class="rounded-xl border p-4" style="background: var(--surface); border-color: var(--border)">
+        <div class="flex items-center justify-between mb-3">
+          <p class="text-sm font-semibold" style="color: var(--text)">Monthly Transaction Count</p>
+          <p class="text-xs" style="color: var(--text-muted)">Posted only</p>
+        </div>
+        <div class="h-72">
+          <Bar :data="txnCountChartData" :options="countBarOptions" />
+        </div>
+      </div>
+
+      <div class="rounded-xl border p-4" style="background: var(--surface); border-color: var(--border)">
+        <div class="flex items-center justify-between mb-3">
+          <p class="text-sm font-semibold" style="color: var(--text)">Top Spending Categories</p>
+          <p class="text-xs" style="color: var(--text-muted)">{{ displayMonth }}</p>
+        </div>
+        <div class="h-72">
+          <Bar :data="categorySpendChartData" :options="barChartOptions" />
+        </div>
+      </div>
+
+      <div class="rounded-xl border p-4" style="background: var(--surface); border-color: var(--border)">
+        <div class="flex items-center justify-between mb-3">
+          <p class="text-sm font-semibold" style="color: var(--text)">Cash In vs Cash Out</p>
+          <p class="text-xs" style="color: var(--text-muted)">{{ displayMonth }}</p>
+        </div>
+        <div class="h-72">
+          <Doughnut :data="cashflowChartData" :options="doughnutOptions" />
+        </div>
       </div>
     </div>
 
@@ -87,11 +155,26 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import api from '@/utils/api'
+import { Bar, Doughnut, Line } from 'vue-chartjs'
+import {
+  Chart as ChartJS,
+  ArcElement,
+  BarElement,
+  CategoryScale,
+  LinearScale,
+  LineElement,
+  PointElement,
+  Tooltip,
+  Legend,
+} from 'chart.js'
+import { usePlaidSync } from '@/composables/usePlaidSync'
+
+ChartJS.register(ArcElement, BarElement, CategoryScale, LinearScale, LineElement, PointElement, Tooltip, Legend)
 
 const CATEGORIES = [
   { value: 'FOOD_AND_DRINK', label: 'Food & Drink' },
@@ -106,11 +189,16 @@ const CATEGORIES = [
 ]
 
 const budgets = ref([])
+const accountOptions = ref([])
+const historyTransactions = ref([])
 const loading = ref(true)
+const loadingInsights = ref(true)
 const showAdd = ref(false)
 const saving = ref(false)
 const currentDate = ref(new Date())
+const selectedAccountId = ref('')
 const newBudget = ref({ category: 'FOOD_AND_DRINK', monthly_limit: '' })
+const { syncIfStale } = usePlaidSync()
 
 const monthYear = computed(() => {
   const d = currentDate.value
@@ -121,6 +209,48 @@ const totalBudgeted = computed(() => budgets.value.reduce((s, b) => s + b.monthl
 const totalSpent = computed(() => budgets.value.reduce((s, b) => s + b.spent, 0))
 const totalRemaining = computed(() => totalBudgeted.value - totalSpent.value)
 
+const monthEndDate = computed(() => {
+  const d = currentDate.value
+  return new Date(d.getFullYear(), d.getMonth() + 1, 0)
+})
+
+const historyStartDate = computed(() => {
+  const d = currentDate.value
+  return new Date(d.getFullYear(), d.getMonth() - 5, 1)
+})
+
+const toIsoDate = (d) => {
+  const yyyy = d.getFullYear()
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd}`
+}
+
+const historyWindowLabel = computed(() => {
+  const start = historyStartDate.value
+  const end = monthEndDate.value
+  return `${start.toLocaleString('default', { month: 'short', year: 'numeric' })} - ${end.toLocaleString('default', { month: 'short', year: 'numeric' })}`
+})
+
+const selectedAccountLabel = computed(() => {
+  if (!selectedAccountId.value) return 'all accounts'
+  const found = accountOptions.value.find(a => String(a.id) === selectedAccountId.value)
+  if (!found) return 'selected account'
+  return `${found.institution_name} · ${found.name}`
+})
+
+const historyMonthBuckets = computed(() => {
+  const buckets = []
+  const start = new Date(historyStartDate.value)
+  for (let i = 0; i < 6; i += 1) {
+    const d = new Date(start.getFullYear(), start.getMonth() + i, 1)
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+    const label = d.toLocaleString('default', { month: 'short', year: '2-digit' })
+    buckets.push({ key, label })
+  }
+  return buckets
+})
+
 const fmt = (v) => Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const fmtCat = (c) => c?.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, l => l.toUpperCase()) || c
 const catIcon = (c) => {
@@ -130,25 +260,261 @@ const catIcon = (c) => {
   return m[c] || 'pi-wallet'
 }
 
-const load = async () => {
+const palette = [
+  '#3DDBB8', '#60A5FA', '#F59E0B', '#F87171', '#22D3EE', '#A78BFA', '#34D399', '#FB7185',
+]
+
+const postedHistoryTransactions = computed(() =>
+  historyTransactions.value.filter(t => !t.pending)
+)
+
+const currentMonthTransactions = computed(() =>
+  postedHistoryTransactions.value.filter(t => (t.date || '').slice(0, 7) === monthYear.value)
+)
+
+const spendTrendRows = computed(() => {
+  const sums = Object.fromEntries(historyMonthBuckets.value.map(b => [b.key, 0]))
+  for (const txn of postedHistoryTransactions.value) {
+    if (Number(txn.amount) <= 0) continue
+    const key = (txn.date || '').slice(0, 7)
+    if (key in sums) sums[key] += Number(txn.amount || 0)
+  }
+  return historyMonthBuckets.value.map(b => ({ label: b.label, value: sums[b.key] || 0 }))
+})
+
+const txnCountRows = computed(() => {
+  const counts = Object.fromEntries(historyMonthBuckets.value.map(b => [b.key, 0]))
+  for (const txn of postedHistoryTransactions.value) {
+    const key = (txn.date || '').slice(0, 7)
+    if (key in counts) counts[key] += 1
+  }
+  return historyMonthBuckets.value.map(b => ({ label: b.label, value: counts[b.key] || 0 }))
+})
+
+const currentMonthCategoryRows = computed(() => {
+  const sums = {}
+  for (const txn of currentMonthTransactions.value) {
+    if (Number(txn.amount) <= 0) continue
+    const key = txn.category || 'UNCATEGORIZED'
+    sums[key] = (sums[key] || 0) + Number(txn.amount || 0)
+  }
+  return Object.entries(sums)
+    .map(([label, value]) => ({ label: fmtCat(label), value }))
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 8)
+})
+
+const monthInflow = computed(() =>
+  currentMonthTransactions.value
+    .filter(t => Number(t.amount) < 0)
+    .reduce((sum, t) => sum + Math.abs(Number(t.amount || 0)), 0)
+)
+
+const monthOutflow = computed(() =>
+  currentMonthTransactions.value
+    .filter(t => Number(t.amount) > 0)
+    .reduce((sum, t) => sum + Number(t.amount || 0), 0)
+)
+
+const hasHistoryInsights = computed(() =>
+  spendTrendRows.value.some(r => r.value > 0) ||
+  txnCountRows.value.some(r => r.value > 0) ||
+  currentMonthCategoryRows.value.length > 0 ||
+  monthInflow.value > 0 ||
+  monthOutflow.value > 0
+)
+
+const spendTrendChartData = computed(() => ({
+  labels: spendTrendRows.value.map(r => r.label),
+  datasets: [{
+    label: 'Spent',
+    data: spendTrendRows.value.map(r => r.value),
+    borderColor: '#fb923c',
+    backgroundColor: 'rgba(251,146,60,0.2)',
+    tension: 0.3,
+    fill: true,
+    pointRadius: 3,
+  }],
+}))
+
+const txnCountChartData = computed(() => ({
+  labels: txnCountRows.value.map(r => r.label),
+  datasets: [{
+    label: 'Transactions',
+    data: txnCountRows.value.map(r => r.value),
+    backgroundColor: '#60a5fa',
+    borderRadius: 8,
+  }],
+}))
+
+const categorySpendChartData = computed(() => ({
+  labels: currentMonthCategoryRows.value.map(r => r.label),
+  datasets: [{
+    label: 'Spent',
+    data: currentMonthCategoryRows.value.map(r => r.value),
+    backgroundColor: currentMonthCategoryRows.value.map((_, i) => palette[i % palette.length]),
+    borderRadius: 8,
+  }],
+}))
+
+const cashflowChartData = computed(() => ({
+  labels: ['Cash In', 'Cash Out'],
+  datasets: [{
+    data: [monthInflow.value, monthOutflow.value],
+    backgroundColor: ['#3DDBB8', '#F87171'],
+    borderWidth: 0,
+  }],
+}))
+
+const barChartOptions = computed(() => ({
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: { display: false },
+    tooltip: {
+      callbacks: {
+        label: (ctx) => `$${fmt(ctx.parsed.y ?? ctx.parsed.x ?? 0)}`,
+      },
+    },
+  },
+  scales: {
+    x: {
+      ticks: { color: '#94A3B8' },
+      grid: { display: false },
+    },
+    y: {
+      ticks: {
+        color: '#94A3B8',
+        callback: (value) => `$${Number(value).toLocaleString('en-US')}`,
+      },
+      grid: { color: 'rgba(148,163,184,0.15)' },
+    },
+  },
+}))
+
+const lineChartOptions = computed(() => ({
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: { display: false },
+    tooltip: {
+      callbacks: {
+        label: (ctx) => `$${fmt(ctx.parsed.y ?? 0)}`,
+      },
+    },
+  },
+  scales: {
+    x: {
+      ticks: { color: '#94A3B8' },
+      grid: { display: false },
+    },
+    y: {
+      ticks: {
+        color: '#94A3B8',
+        callback: (value) => `$${Number(value).toLocaleString('en-US')}`,
+      },
+      grid: { color: 'rgba(148,163,184,0.15)' },
+    },
+  },
+}))
+
+const countBarOptions = computed(() => ({
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: { display: false },
+  },
+  scales: {
+    x: {
+      ticks: { color: '#94A3B8' },
+      grid: { display: false },
+    },
+    y: {
+      beginAtZero: true,
+      ticks: { color: '#94A3B8', precision: 0 },
+      grid: { color: 'rgba(148,163,184,0.15)' },
+    },
+  },
+}))
+
+const doughnutOptions = computed(() => ({
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: {
+      position: 'bottom',
+      labels: { color: '#94A3B8', boxWidth: 10, boxHeight: 10 },
+    },
+    tooltip: {
+      callbacks: {
+        label: (ctx) => `${ctx.label}: $${fmt(ctx.raw || 0)}`,
+      },
+    },
+  },
+}))
+
+const fetchHistoryTransactions = async () => {
+  const all = []
+  const pageSize = 200
+  let offset = 0
+  let total = 0
+
+  do {
+    const params = new URLSearchParams({
+      limit: String(pageSize),
+      offset: String(offset),
+      start_date: toIsoDate(historyStartDate.value),
+      end_date: toIsoDate(monthEndDate.value),
+    })
+    if (selectedAccountId.value) params.set('account_id', selectedAccountId.value)
+    const res = await api.get(`/api/transactions?${params}`)
+    const txns = res.data?.transactions || []
+    total = Number(res.data?.total || 0)
+    all.push(...txns)
+    offset += pageSize
+    if (!txns.length) break
+  } while (offset < total && offset < 2000)
+
+  return all
+}
+
+const loadBudgets = async () => {
   loading.value = true
   try {
     const res = await api.get(`/api/budgets?month_year=${monthYear.value}`)
     budgets.value = res.data
-  } finally { loading.value = false }
+  } finally {
+    loading.value = false
+  }
+}
+
+const loadInsights = async () => {
+  loadingInsights.value = true
+  try {
+    historyTransactions.value = await fetchHistoryTransactions()
+  } finally {
+    loadingInsights.value = false
+  }
+}
+
+const loadAccountOptions = async () => {
+  try {
+    const res = await api.get('/api/accounts')
+    accountOptions.value = (res.data || []).filter(a => Number.isInteger(a.id) && a.item_db_id !== null)
+  } catch (e) {
+    accountOptions.value = []
+  }
 }
 
 const prevMonth = () => {
   const d = new Date(currentDate.value)
   d.setMonth(d.getMonth() - 1)
   currentDate.value = d
-  load()
 }
 const nextMonth = () => {
   const d = new Date(currentDate.value)
   d.setMonth(d.getMonth() + 1)
   currentDate.value = d
-  load()
 }
 
 const addBudget = async () => {
@@ -157,7 +523,7 @@ const addBudget = async () => {
     await api.post('/api/budgets', { ...newBudget.value, month_year: monthYear.value, monthly_limit: Number(newBudget.value.monthly_limit) })
     showAdd.value = false
     newBudget.value = { category: 'FOOD_AND_DRINK', monthly_limit: '' }
-    await load()
+    await loadBudgets()
   } finally { saving.value = false }
 }
 
@@ -166,5 +532,19 @@ const deleteBudget = async (id) => {
   budgets.value = budgets.value.filter(b => b.id !== id)
 }
 
-onMounted(load)
+onMounted(async () => {
+  try {
+    await syncIfStale({ maxAgeMs: 3 * 60_000 })
+  } catch (e) {}
+  await loadAccountOptions()
+  await Promise.all([loadBudgets(), loadInsights()])
+})
+
+watch(monthYear, async () => {
+  await Promise.all([loadBudgets(), loadInsights()])
+})
+
+watch(selectedAccountId, async () => {
+  await loadInsights()
+})
 </script>

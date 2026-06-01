@@ -160,6 +160,65 @@ def get_accounts_for_user(user_id: int) -> List[Dict[str, Any]]:
     ]
 
 
+def get_loan_accounts_for_user(user_id: int) -> List[Dict[str, Any]]:
+    """Return accounts with type='loan' that can be linked to properties."""
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT ba.id, ba.account_id, ba.name, ba.type, ba.subtype, ba.mask,
+                       ba.current_balance, ba.updated_at, bi.institution_name, bi.id
+                FROM flowmint.bank_accounts ba
+                JOIN flowmint.bank_items bi ON ba.item_id = bi.id
+                WHERE bi.user_id = %s AND ba.type = 'loan'
+                ORDER BY bi.institution_name, ba.name
+                """,
+                (user_id,)
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "id": r[0], "account_id": r[1], "name": r[2], "type": r[3],
+            "subtype": r[4], "mask": r[5],
+            "current_balance": float(r[6]) if r[6] is not None else None,
+            "updated_at": r[7].isoformat() if r[7] else None,
+            "institution_name": r[8], "item_db_id": r[9],
+        }
+        for r in rows
+    ]
+
+
+def get_item_for_account(account_plaid_id: str) -> Optional[Dict[str, Any]]:
+    """Return the bank_item (with decrypted access token) that owns this Plaid account."""
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT bi.id, bi.access_token_enc, bi.institution_name
+                FROM flowmint.bank_accounts ba
+                JOIN flowmint.bank_items bi ON ba.item_id = bi.id
+                WHERE ba.account_id = %s
+                """,
+                (account_plaid_id,)
+            )
+            row = cur.fetchone()
+    if not row:
+        return None
+    return {"id": row[0], "access_token": crypto.decrypt(row[1]), "institution_name": row[2]}
+
+
+def get_properties_linked_to_account(account_plaid_id: str) -> List[int]:
+    """Return property IDs that have this Plaid account linked as their mortgage."""
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM flowmint.properties WHERE mortgage_account_id = %s",
+                (account_plaid_id,)
+            )
+            rows = cur.fetchall()
+    return [r[0] for r in rows]
+
+
 def get_account_db_id_by_plaid_id(account_id: str) -> Optional[int]:
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
@@ -238,6 +297,7 @@ def get_transactions_for_user(
     user_id: int,
     limit: int = 50,
     offset: int = 0,
+    account_id: Optional[int] = None,
     category: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -247,6 +307,9 @@ def get_transactions_for_user(
     ]
     params: list = [user_id]
 
+    if account_id:
+        conditions.append("ba.id = %s")
+        params.append(account_id)
     if category:
         conditions.append("(t.category_override = %s OR (t.category_override IS NULL AND t.category_primary = %s))")
         params.extend([category, category])

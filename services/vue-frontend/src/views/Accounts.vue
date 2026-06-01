@@ -49,7 +49,15 @@
               </div>
               <div>
                 <p class="text-sm font-medium" style="color: var(--text)">{{ acct.name }}</p>
-                <p class="text-xs" style="color: var(--text-muted)">{{ acct.subtype }} · ••••{{ acct.mask }}</p>
+                <div class="flex items-center gap-2 mt-0.5">
+                  <span
+                    class="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full"
+                    :style="accountBadgeStyle(acct)"
+                  >
+                    {{ accountTypeLabel(acct) }}
+                  </span>
+                  <p class="text-xs" style="color: var(--text-muted)">••••{{ acct.mask }}</p>
+                </div>
               </div>
             </div>
             <div class="text-right">
@@ -75,16 +83,18 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import Button from 'primevue/button'
 import api from '@/utils/api'
 import { usePlaid } from '@/composables/usePlaid'
+import { usePlaidSync } from '@/composables/usePlaidSync'
 
 const accounts = ref([])
 const loading = ref(true)
 const syncing = ref(false)
 const error = ref('')
 const { isLinking, openLink } = usePlaid()
+const { syncNow, syncIfStale } = usePlaidSync()
 
 const grouped = computed(() => {
   const g = {}
@@ -109,6 +119,68 @@ const accountIcon = (type) => {
   return 'pi-building-columns'
 }
 
+const accountTypeLabel = (acct) => {
+  const raw = (acct.subtype || acct.type || '').toString().trim().toLowerCase()
+  const normalized = raw.replace(/[_-]+/g, ' ')
+
+  const labels = {
+    checking: 'Checking',
+    savings: 'Savings',
+    mortgage: 'Mortgage',
+    heloc: 'HELOC',
+    auto: 'Auto Loan',
+    'student loan': 'Student Loan',
+    'personal loan': 'Personal Loan',
+    credit: 'Credit',
+    'credit card': 'Credit Card',
+    brokerage: 'Brokerage',
+    investment: 'Investment',
+  }
+
+  if (labels[normalized]) return labels[normalized]
+  if (!normalized) return 'Account'
+  return normalized
+    .split(' ')
+    .filter(Boolean)
+    .map(s => s[0].toUpperCase() + s.slice(1))
+    .join(' ')
+}
+
+const accountTypeCategory = (acct) => {
+  const subtype = (acct.subtype || '').toString().trim().toLowerCase().replace(/[_-]+/g, ' ')
+  const type = (acct.type || '').toString().trim().toLowerCase()
+
+  if (
+    ['mortgage', 'heloc', 'auto', 'student loan', 'personal loan', 'loan'].includes(subtype) ||
+    type === 'loan'
+  ) return 'loan'
+
+  if (subtype.includes('credit') || type === 'credit') return 'credit'
+
+  if (
+    ['checking', 'savings', 'money market', 'cd', 'cash management'].includes(subtype) ||
+    type === 'depository'
+  ) return 'deposit'
+
+  if (
+    subtype.includes('brokerage') ||
+    subtype.includes('retirement') ||
+    subtype.includes('ira') ||
+    type === 'investment'
+  ) return 'investment'
+
+  return 'other'
+}
+
+const accountBadgeStyle = (acct) => {
+  const category = accountTypeCategory(acct)
+  if (category === 'loan') return 'background: rgba(251,146,60,0.16); color: #fb923c'
+  if (category === 'credit') return 'background: rgba(248,113,113,0.16); color: #f87171'
+  if (category === 'deposit') return 'background: rgba(61,219,184,0.14); color: var(--mint)'
+  if (category === 'investment') return 'background: rgba(96,165,250,0.16); color: #60a5fa'
+  return 'background: var(--surface-2); color: var(--text-muted)'
+}
+
 const fetchAccounts = async () => {
   try {
     const res = await api.get('/api/accounts')
@@ -124,7 +196,7 @@ const syncAccounts = async () => {
   syncing.value = true
   error.value = ''
   try {
-    await api.post('/api/plaid/sync')
+    await syncNow({ force: true })
     await fetchAccounts()
   } catch (e) {
     error.value = 'Sync failed'
@@ -133,12 +205,37 @@ const syncAccounts = async () => {
   }
 }
 
+const maybeAutoSync = async (maxAgeMs = 2 * 60_000) => {
+  try {
+    const result = await syncIfStale({ maxAgeMs })
+    return !result.skipped
+  } catch {
+    return false
+  }
+}
+
+const handleVisibilityChange = async () => {
+  if (document.visibilityState !== 'visible') return
+  const synced = await maybeAutoSync(60_000)
+  if (synced) await fetchAccounts()
+}
+
 const openPlaidLink = () => {
   openLink(async () => {
     loading.value = true
+    await syncNow({ force: true })
     await fetchAccounts()
   })
 }
 
-onMounted(fetchAccounts)
+onMounted(async () => {
+  loading.value = true
+  await maybeAutoSync()
+  await fetchAccounts()
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+})
 </script>

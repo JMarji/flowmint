@@ -23,12 +23,14 @@ const router = createRouter({
         { path: '', redirect: '/dashboard' },
         { path: 'dashboard', name: 'dashboard', component: () => import('@/views/Dashboard.vue') },
         { path: 'accounts', name: 'accounts', component: () => import('@/views/Accounts.vue') },
+        { path: 'debt', name: 'debt-tracker', component: () => import('@/views/DebtTracker.vue') },
         { path: 'transactions', name: 'transactions', component: () => import('@/views/Transactions.vue') },
         { path: 'budget', name: 'budget', component: () => import('@/views/Budget.vue') },
         { path: 'bills', name: 'bills', component: () => import('@/views/Bills.vue') },
         { path: 'properties', name: 'properties', component: () => import('@/views/Properties.vue') },
         { path: 'properties/:id', name: 'property-detail', component: () => import('@/views/PropertyDetail.vue') },
-        { path: 'documents', name: 'documents', component: () => import('@/views/Documents.vue') }
+        { path: 'documents', name: 'documents', component: () => import('@/views/Documents.vue') },
+        { path: 'planning', name: 'planning', component: () => import('@/views/Planning.vue') }
       ]
     },
     { path: '/:pathMatch(.*)*', redirect: '/dashboard' }

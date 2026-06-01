@@ -92,9 +92,12 @@ CREATE TABLE IF NOT EXISTS flowmint.properties (
     mortgage_balance NUMERIC(12,2),
     mortgage_rate NUMERIC(5,3),
     mortgage_payment NUMERIC(12,2),
+    mortgage_account_id TEXT REFERENCES flowmint.bank_accounts(account_id) ON DELETE SET NULL,
     notes TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE flowmint.properties ADD COLUMN IF NOT EXISTS mortgage_account_id TEXT REFERENCES flowmint.bank_accounts(account_id) ON DELETE SET NULL;
 
 CREATE TABLE IF NOT EXISTS flowmint.property_transactions (
     id SERIAL PRIMARY KEY,
@@ -128,4 +131,30 @@ CREATE TABLE IF NOT EXISTS flowmint.networth_snapshots (
     net_worth NUMERIC(12,2),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(user_id, snapshot_date)
+);
+
+CREATE TABLE IF NOT EXISTS flowmint.plans (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES flowmint.users(id) ON DELETE CASCADE,
+    property_id INTEGER REFERENCES flowmint.properties(id) ON DELETE SET NULL,
+    title TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS flowmint.plan_messages (
+    id SERIAL PRIMARY KEY,
+    plan_id INTEGER NOT NULL REFERENCES flowmint.plans(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+    content TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS flowmint.plan_todos (
+    id SERIAL PRIMARY KEY,
+    plan_id INTEGER NOT NULL REFERENCES flowmint.plans(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    done BOOLEAN NOT NULL DEFAULT FALSE,
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

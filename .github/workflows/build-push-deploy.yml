@@ -56,6 +56,7 @@ jobs:
           context: ./services/fastapi-backend
           file: ./services/fastapi-backend/Dockerfile
           push: true
+          build-args: COMMIT_HASH=${{ github.sha }}
           tags: |
             ${{ env.DOCKERHUB_NAMESPACE }}/${{ env.BACKEND_IMAGE_NAME }}:${{ steps.compute-tag.outputs.image_tag }}
             ${{ env.DOCKERHUB_NAMESPACE }}/${{ env.BACKEND_IMAGE_NAME }}:latest
@@ -67,6 +68,7 @@ jobs:
           context: ./services/vue-frontend
           file: ./services/vue-frontend/Dockerfile
           push: true
+          build-args: COMMIT_HASH=${{ github.sha }}
           tags: |
             ${{ env.DOCKERHUB_NAMESPACE }}/${{ env.FRONTEND_IMAGE_NAME }}:${{ steps.compute-tag.outputs.image_tag }}
             ${{ env.DOCKERHUB_NAMESPACE }}/${{ env.FRONTEND_IMAGE_NAME }}:latest

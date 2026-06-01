@@ -132,12 +132,14 @@ import { ref, computed, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import api from '@/utils/api'
 import { useAuth } from '@/composables/useAuth'
+import { usePlaidSync } from '@/composables/usePlaidSync'
 
 const auth = useAuth()
 const accounts = ref([])
 const recentTxns = ref([])
 const netWorth = ref(null)
 const loadingTxns = ref(true)
+const { syncIfStale } = usePlaidSync()
 
 const greeting = computed(() => {
   const h = new Date().getHours()
@@ -171,6 +173,10 @@ const fmt = (val) => val != null ? Number(val).toLocaleString('en-US', { minimum
 const formatDate = (d) => new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 
 onMounted(async () => {
+  try {
+    await syncIfStale({ maxAgeMs: 5 * 60_000 })
+  } catch (e) {}
+
   const [acctRes, nwRes] = await Promise.allSettled([api.get('/api/accounts'), api.get('/api/networth')])
   if (acctRes.status === 'fulfilled') accounts.value = acctRes.value.data
   if (nwRes.status === 'fulfilled') netWorth.value = nwRes.value.data
