@@ -1,0 +1,116 @@
+<template>
+  <section class="rounded-xl border p-4" style="background: var(--surface); border-color: var(--border)">
+    <header class="flex items-center justify-between gap-3 mb-3">
+      <div>
+        <h2 class="text-base font-semibold" style="color: var(--text)">Vendor Summary</h2>
+        <p class="text-xs" style="color: var(--text-muted)">
+          Top {{ vendorRows.length }} vendors from this page ({{ vendorCount }} total)
+        </p>
+      </div>
+      <div class="text-right">
+        <p class="text-xs" style="color: var(--text-muted)">Total spend</p>
+        <p class="text-sm font-semibold" style="color: var(--text)">${{ formatCurrency(totalOutflow) }}</p>
+      </div>
+    </header>
+
+    <div v-if="vendorRows.length === 0" class="rounded-lg border border-dashed p-4 text-xs" style="border-color: var(--border); color: var(--text-muted)">
+      No vendor data available for this page.
+    </div>
+
+    <div v-else class="space-y-2">
+      <div
+        v-for="vendor in vendorRows"
+        :key="vendor.name"
+        class="rounded-lg border px-3 py-2"
+        style="border-color: var(--border); background: var(--surface-2)"
+      >
+        <div class="flex items-center gap-3">
+          <div class="w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center flex-shrink-0" style="background: var(--surface)">
+            <img v-if="vendor.logo" :src="vendor.logo" :alt="vendor.name" class="w-full h-full object-cover" />
+            <i v-else class="pi pi-shop text-xs" style="color: var(--mint)"></i>
+          </div>
+
+          <div class="min-w-0 flex-1">
+            <p class="text-sm font-medium truncate" style="color: var(--text)">{{ vendor.name }}</p>
+            <p class="text-xs" style="color: var(--text-muted)">
+              {{ vendor.count }} transaction{{ vendor.count === 1 ? '' : 's' }}
+            </p>
+          </div>
+
+          <div class="text-right">
+            <p class="text-sm font-semibold" style="color: var(--text)">${{ formatCurrency(vendor.outflow) }}</p>
+            <p class="text-xs" style="color: var(--text-muted)">
+              {{ totalOutflow > 0 ? ((vendor.outflow / totalOutflow) * 100).toFixed(1) : '0.0' }}% of spend
+            </p>
+          </div>
+        </div>
+
+        <div class="w-full h-1.5 rounded-full mt-2 overflow-hidden" style="background: var(--surface)">
+          <div
+            class="h-full rounded-full"
+            style="background: var(--mint)"
+            :style="{ width: `${totalOutflow > 0 ? Math.max((vendor.outflow / totalOutflow) * 100, 2) : 0}%` }"
+          ></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</template>
+
+<script setup>
+import { computed } from 'vue'
+
+const props = defineProps({
+  transactions: {
+    type: Array,
+    default: () => [],
+  },
+  maxRows: {
+    type: Number,
+    default: 8,
+  },
+})
+
+const vendorAggregates = computed(() => {
+  const byVendor = new Map()
+
+  for (const txn of props.transactions) {
+    const name = (txn.merchant_name || txn.name || 'Unknown Vendor').trim() || 'Unknown Vendor'
+    const amount = Number(txn.amount) || 0
+
+    if (!byVendor.has(name)) {
+      byVendor.set(name, {
+        name,
+        count: 0,
+        outflow: 0,
+        logo: txn.logo_url || null,
+      })
+    }
+
+    const row = byVendor.get(name)
+    row.count += 1
+
+    if (!row.logo && txn.logo_url) {
+      row.logo = txn.logo_url
+    }
+
+    // Plaid expense transactions are positive amounts; credits are negative.
+    if (amount > 0) {
+      row.outflow += amount
+    }
+  }
+
+  return Array.from(byVendor.values())
+    .sort((a, b) => (b.outflow - a.outflow) || (b.count - a.count) || a.name.localeCompare(b.name))
+})
+
+const vendorRows = computed(() => vendorAggregates.value.slice(0, props.maxRows))
+const vendorCount = computed(() => vendorAggregates.value.length)
+const totalOutflow = computed(() => vendorAggregates.value.reduce((sum, row) => sum + row.outflow, 0))
+
+const formatCurrency = (value) =>
+  Number(value || 0).toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+</script>

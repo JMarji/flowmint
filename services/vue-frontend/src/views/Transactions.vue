@@ -71,6 +71,9 @@
       </div>
     </div>
 
+    <!-- Vendor aggregate -->
+    <VendorAggregation v-if="!loading && transactions.length" :transactions="transactions" class="mt-5" />
+
     <!-- Pagination -->
     <div v-if="total > limit" class="flex justify-center gap-3 mt-5">
       <Button @click="prevPage" :disabled="offset === 0" label="Previous" severity="secondary" size="small" />
@@ -85,6 +88,7 @@ import { ref, onMounted } from 'vue'
 import InputText from 'primevue/inputtext'
 import Button from 'primevue/button'
 import api from '@/utils/api'
+import VendorAggregation from '@/components/transactions/VendorAggregation.vue'
 
 const CATEGORIES = [
   { value: 'FOOD_AND_DRINK', label: 'Food & Drink' },
@@ -106,7 +110,7 @@ const search = ref('')
 const categoryFilter = ref('')
 const startDate = ref('')
 const endDate = ref('')
-const limit = ref(50)
+const limit = ref(25)
 const offset = ref(0)
 let searchTimer = null
 
