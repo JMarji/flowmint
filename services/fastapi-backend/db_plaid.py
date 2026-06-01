@@ -301,6 +301,8 @@ def get_transactions_for_user(
     category: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    search: Optional[str] = None,
+    vendor: Optional[str] = None,
 ) -> Dict[str, Any]:
     conditions = [
         "bi.user_id = %s",
@@ -319,6 +321,13 @@ def get_transactions_for_user(
     if end_date:
         conditions.append("t.date <= %s")
         params.append(end_date)
+    if search:
+        conditions.append("(LOWER(COALESCE(t.name, '')) LIKE %s OR LOWER(COALESCE(t.merchant_name, '')) LIKE %s)")
+        like = f"%{search.lower()}%"
+        params.extend([like, like])
+    if vendor:
+        conditions.append("COALESCE(NULLIF(TRIM(COALESCE(t.merchant_name, t.name, '')), ''), 'Unknown Vendor') = %s")
+        params.append(vendor)
 
     where = " AND ".join(conditions)
 
@@ -384,7 +393,7 @@ def get_vendor_summary_for_user(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     search: Optional[str] = None,
-    top_n: int = 50,
+    top_n: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Return vendor-level spend aggregates across all filtered transactions."""
     conditions = [
@@ -410,6 +419,11 @@ def get_vendor_summary_for_user(
         params.extend([like, like])
 
     where = " AND ".join(conditions)
+    limit_clause = ""
+    query_params = list(params)
+    if top_n is not None:
+        limit_clause = "\n                LIMIT %s"
+        query_params.append(top_n)
 
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
@@ -426,9 +440,9 @@ def get_vendor_summary_for_user(
                 WHERE {where}
                 GROUP BY COALESCE(NULLIF(TRIM(COALESCE(t.merchant_name, t.name, '')), ''), 'Unknown Vendor')
                 ORDER BY outflow DESC, txn_count DESC, vendor_name ASC
-                LIMIT %s
+                {limit_clause}
                 """,
-                params + [top_n]
+                query_params
             )
             rows = cur.fetchall()
 

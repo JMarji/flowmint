@@ -19,6 +19,8 @@ def list_transactions(
     category: Optional[str] = Query(None),
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    vendor: Optional[str] = Query(None),
     current_user: dict = Depends(get_current_user)
 ):
     """Return paginated transactions with optional filters."""
@@ -30,6 +32,8 @@ def list_transactions(
         category=category,
         start_date=start_date,
         end_date=end_date,
+        search=search,
+        vendor=vendor,
     )
 
 
@@ -40,7 +44,7 @@ def vendor_summary(
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
-    top_n: int = Query(50, ge=1, le=200),
+    top_n: Optional[int] = Query(None, ge=1, le=5000),
     current_user: dict = Depends(get_current_user)
 ):
     """Return vendor-level spend aggregates across all filtered transactions."""
