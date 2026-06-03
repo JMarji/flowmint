@@ -5,10 +5,34 @@
         <h1 class="text-2xl font-bold" style="color: var(--text)">Transactions</h1>
         <p class="text-sm mt-1" style="color: var(--text-muted)">{{ total }} transactions</p>
       </div>
-      <div v-if="selectedVendor" class="text-xs px-2.5 py-1.5 rounded-full" style="background: color-mix(in oklab, var(--mint) 16%, transparent); color: var(--text)">
-        Vendor filter: {{ selectedVendor }}
+      <div class="flex items-center gap-2 flex-wrap">
+        <div v-if="selectedVendor" class="text-xs px-2.5 py-1.5 rounded-full" style="background: color-mix(in oklab, var(--mint) 16%, transparent); color: var(--text)">
+          Vendor filter: {{ selectedVendor }}
+        </div>
+        <div v-if="selectedTransaction" class="text-xs px-2.5 py-1.5 rounded-full" style="background: var(--surface-2); color: var(--text)">
+          Selected: {{ selectedTransaction.merchant_name || selectedTransaction.name || `#${selectedTransaction.id}` }}
+        </div>
+        <Button
+          @click="tagSelectedAsMortgage"
+          label="Tag As Mortgage"
+          icon="pi pi-home"
+          size="small"
+          class="p-button-primary"
+          :disabled="!selectedTransaction || taggingTxnId !== null"
+          :loading="taggingTxnId !== null"
+        />
+        <Button
+          v-if="selectedTransaction"
+          @click="clearSelection"
+          label="Clear"
+          size="small"
+          severity="secondary"
+          text
+        />
       </div>
     </header>
+
+    <p v-if="tagStatus" class="text-xs mb-3" style="color: var(--text-muted)">{{ tagStatus }}</p>
 
     <div class="flex gap-3 mb-5 flex-wrap">
       <InputText v-model="search" placeholder="Search transaction or merchant..." class="flex-1 min-w-52" @input="debounceSearch" />
@@ -52,7 +76,9 @@
             v-for="txn in transactions"
             :key="txn.id"
             class="rounded-xl border p-4"
-            style="background: var(--surface); border-color: var(--border)"
+            :style="selectedTxnId === txn.id
+              ? 'background: var(--surface); border-color: var(--mint)'
+              : 'background: var(--surface); border-color: var(--border)'"
           >
             <div class="flex items-start gap-3">
               <div class="w-10 h-10 rounded-lg overflow-hidden flex items-center justify-center flex-shrink-0" style="background: var(--surface-2)">
@@ -77,6 +103,28 @@
                   <span class="text-xs px-2 py-1 rounded-full" style="background: var(--surface-2); color: var(--text-muted)">Date: {{ formatDate(txn.date) }}</span>
                   <span class="text-xs px-2 py-1 rounded-full" style="background: var(--surface-2); color: var(--text-muted)">Category: {{ formatCategory(txn.category) }}</span>
                   <span class="text-xs px-2 py-1 rounded-full" style="background: var(--surface-2); color: var(--text-muted)">Pending: {{ txn.pending ? 'Yes' : 'No' }}</span>
+                  <span v-if="txn.is_mortgage_payment" class="text-xs px-2 py-1 rounded-full" style="background: rgba(251,146,60,0.16); color: #fb923c">Mortgage</span>
+                </div>
+
+                <div class="mt-3 flex gap-2">
+                  <Button
+                    @click="selectTransaction(txn)"
+                    :label="selectedTxnId === txn.id ? 'Selected' : 'Select'"
+                    :icon="selectedTxnId === txn.id ? 'pi pi-check-circle' : 'pi pi-check'"
+                    size="small"
+                    :severity="selectedTxnId === txn.id ? undefined : 'secondary'"
+                    :text="selectedTxnId !== txn.id"
+                  />
+                  <Button
+                    @click="tagTransactionAsMortgage(txn.id)"
+                    label="Tag As Mortgage"
+                    icon="pi pi-home"
+                    size="small"
+                    severity="secondary"
+                    text
+                    :loading="taggingTxnId === txn.id"
+                    :disabled="taggingTxnId !== null"
+                  />
                 </div>
 
                 <dl class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-x-4 gap-y-2 mt-3 text-xs">
@@ -165,7 +213,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import InputText from 'primevue/inputtext'
 import Button from 'primevue/button'
 import api from '@/utils/api'
@@ -198,10 +246,15 @@ const endDate = ref('')
 const selectedVendor = ref('')
 const limit = ref(25)
 const offset = ref(0)
+const selectedTxnId = ref(null)
+const taggingTxnId = ref(null)
+const tagStatus = ref('')
 const vendorSummary = ref({ vendors: [], vendor_count: 0, total_outflow: 0 })
 const summaryLoading = ref(false)
 let searchTimer = null
 const { syncIfStale } = usePlaidSync()
+
+const selectedTransaction = computed(() => transactions.value.find(t => t.id === selectedTxnId.value) || null)
 
 const load = async () => {
   loading.value = true
@@ -250,6 +303,10 @@ const load = async () => {
     transactions.value = res.data.transactions || []
     total.value = res.data.total
 
+    if (selectedTxnId.value != null && !transactions.value.some(t => t.id === selectedTxnId.value)) {
+      selectedTxnId.value = null
+    }
+
     if (summaryResult.status === 'fulfilled') {
       vendorSummary.value = {
         vendors: summaryResult.value?.data?.vendors || [],
@@ -280,6 +337,43 @@ const debounceSearch = () => {
 const applyFilters = () => {
   offset.value = 0
   load()
+}
+
+const selectTransaction = (txn) => {
+  selectedTxnId.value = txn.id
+  tagStatus.value = ''
+}
+
+const clearSelection = () => {
+  selectedTxnId.value = null
+  tagStatus.value = ''
+}
+
+const tagTransactionAsMortgage = async (txnId) => {
+  taggingTxnId.value = txnId
+  tagStatus.value = ''
+  try {
+    await api.patch(`/api/transactions/${txnId}/category`, { category: 'MORTGAGE_PAYMENT' })
+
+    const txn = transactions.value.find(t => t.id === txnId)
+    if (txn) {
+      txn.category_override = 'MORTGAGE_PAYMENT'
+      txn.category = 'MORTGAGE_PAYMENT'
+      txn.is_mortgage_payment = true
+    }
+
+    const selectedName = txn?.merchant_name || txn?.name || `#${txnId}`
+    tagStatus.value = `Tagged ${selectedName} as mortgage payment.`
+  } catch (e) {
+    tagStatus.value = e?.response?.data?.detail || 'Could not tag transaction as mortgage payment.'
+  } finally {
+    taggingTxnId.value = null
+  }
+}
+
+const tagSelectedAsMortgage = async () => {
+  if (!selectedTransaction.value) return
+  await tagTransactionAsMortgage(selectedTransaction.value.id)
 }
 
 const selectVendor = (vendorName) => {
