@@ -302,6 +302,16 @@ def get_transactions_for_user(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
 ) -> Dict[str, Any]:
+    effective_category_sql = """COALESCE(
+        t.category_override,
+        CASE
+            WHEN (p.id IS NOT NULL OR LOWER(COALESCE(ba.subtype, '')) = 'mortgage')
+                 AND t.amount > 0
+                THEN 'MORTGAGE_PAYMENT'
+            ELSE t.category_primary
+        END
+    )"""
+
     conditions = [
         "bi.user_id = %s",
     ]
@@ -311,8 +321,8 @@ def get_transactions_for_user(
         conditions.append("ba.id = %s")
         params.append(account_id)
     if category:
-        conditions.append("(t.category_override = %s OR (t.category_override IS NULL AND t.category_primary = %s))")
-        params.extend([category, category])
+        conditions.append(f"({effective_category_sql} = %s)")
+        params.append(category)
     if start_date:
         conditions.append("t.date >= %s")
         params.append(start_date)
@@ -330,6 +340,8 @@ def get_transactions_for_user(
                     FROM flowmint.transactions t
                     JOIN flowmint.bank_accounts ba ON t.account_id = ba.id
                     JOIN flowmint.bank_items bi ON ba.item_id = bi.id
+                    LEFT JOIN flowmint.properties p
+                      ON p.mortgage_account_id = ba.account_id AND p.user_id = bi.user_id
                     WHERE {where}""",
                 params
             )
@@ -339,13 +351,16 @@ def get_transactions_for_user(
             cur.execute(
                 f"""
                 SELECT t.id, t.txn_id, t.amount, t.date, t.name, t.merchant_name,
-                       COALESCE(t.category_override, t.category_primary) AS category,
+                      {effective_category_sql} AS category,
                        t.category_primary, t.category_detailed, t.category_override,
                        t.pending, t.logo_url, t.synced_at,
-                       ba.name AS account_name, bi.institution_name
+                      ba.name AS account_name, bi.institution_name,
+                      CASE WHEN {effective_category_sql} = 'MORTGAGE_PAYMENT' THEN TRUE ELSE FALSE END AS is_mortgage_payment
                 FROM flowmint.transactions t
                 JOIN flowmint.bank_accounts ba ON t.account_id = ba.id
                 JOIN flowmint.bank_items bi ON ba.item_id = bi.id
+                  LEFT JOIN flowmint.properties p
+                    ON p.mortgage_account_id = ba.account_id AND p.user_id = bi.user_id
                 WHERE {where}
                 ORDER BY t.date DESC, t.id DESC
                 LIMIT %s OFFSET %s
@@ -371,6 +386,7 @@ def get_transactions_for_user(
             "synced_at": r[12].isoformat() if r[12] else None,
             "account_name": r[13],
             "institution_name": r[14],
+            "is_mortgage_payment": bool(r[15]),
         }
         for r in rows
     ]

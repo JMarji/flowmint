@@ -62,6 +62,7 @@
           <p class="text-xs" style="color: var(--text-muted)">
             {{ txn.account_name }} · {{ formatDate(txn.date) }}
             <span v-if="txn.pending" class="ml-1 px-1.5 py-0.5 rounded text-xs" style="background: var(--surface-2); color: var(--text-muted)">Pending</span>
+            <span v-if="txn.is_mortgage_payment" class="ml-1 px-1.5 py-0.5 rounded text-xs" style="background: rgba(251,146,60,0.18); color: #fb923c">Mortgage</span>
           </p>
         </div>
 
@@ -94,6 +95,7 @@ import api from '@/utils/api'
 import { usePlaidSync } from '@/composables/usePlaidSync'
 
 const CATEGORIES = [
+  { value: 'MORTGAGE_PAYMENT', label: 'Mortgage Payment' },
   { value: 'FOOD_AND_DRINK', label: 'Food & Drink' },
   { value: 'TRANSPORTATION', label: 'Transportation' },
   { value: 'UTILITIES', label: 'Utilities' },
@@ -177,6 +179,7 @@ const formatCategory = (c) => c ? c.replace(/_/g, ' ').toLowerCase().replace(/\b
 const categoryIcon = (c) => {
   if (!c) return 'pi-receipt'
   const map = {
+    MORTGAGE_PAYMENT: 'pi-home',
     FOOD_AND_DRINK: 'pi-shopping-bag', TRANSPORTATION: 'pi-car',
     SHOPPING: 'pi-shopping-cart', ENTERTAINMENT: 'pi-ticket',
     INCOME: 'pi-arrow-down-left', TRANSFER_IN: 'pi-arrow-down-left',
