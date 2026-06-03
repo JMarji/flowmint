@@ -29,6 +29,13 @@
           <Button icon="pi pi-chevron-right" severity="secondary" text rounded @click="nextMonth" />
         </div>
 
+        <div class="flex flex-wrap gap-1.5 mb-3">
+          <span class="text-[10px] px-2 py-1 rounded" style="background: rgba(61,219,184,0.16); color: var(--mint)">Recurring bills</span>
+          <span class="text-[10px] px-2 py-1 rounded" style="background: rgba(251,146,60,0.16); color: #fb923c">Mortgage payments</span>
+          <span class="text-[10px] px-2 py-1 rounded" style="background: rgba(96,165,250,0.16); color: #60a5fa">Auto loan payments</span>
+          <span class="text-[10px] px-2 py-1 rounded" style="background: rgba(148,163,184,0.18); color: #94a3b8">Manual plotted days</span>
+        </div>
+
         <div class="grid grid-cols-7 gap-1 mb-1">
           <p v-for="wd in WEEK_DAYS" :key="wd" class="text-[11px] text-center py-1" style="color: var(--text-muted)">{{ wd }}</p>
         </div>
@@ -50,7 +57,7 @@
                 v-for="event in cell.events.slice(0, 3)"
                 :key="event.id"
                 class="text-[10px] px-1.5 py-1 rounded truncate"
-                :style="event.type === 'bill' ? 'background: rgba(61,219,184,0.16); color: var(--mint)' : 'background: rgba(96,165,250,0.16); color: #60a5fa'"
+                :style="eventChipStyle(event)"
                 :title="`${event.name} · $${fmt(event.amount)}`"
               >
                 {{ event.name }} · ${{ fmt(event.amount) }}
@@ -78,7 +85,7 @@
         <div v-else class="space-y-2">
           <div v-for="event in selectedEvents" :key="event.id" class="rounded-lg border p-2.5" style="border-color: var(--border); background: var(--surface-2)">
             <p class="text-xs font-medium" style="color: var(--text)">{{ event.name }}</p>
-            <p class="text-[11px]" style="color: var(--text-muted)">${{ fmt(event.amount) }} · {{ event.type === 'bill' ? 'Recurring bill' : 'Plotted day' }}</p>
+            <p class="text-[11px]" style="color: var(--text-muted)">${{ fmt(event.amount) }} · {{ eventTypeLabel(event) }}</p>
             <div class="flex gap-1 mt-2">
               <Button
                 v-if="event.type === 'bill'"
@@ -128,6 +135,7 @@
               <Button @click="deleteBill(bill.id)" icon="pi pi-trash" text rounded severity="secondary" size="small" />
             </div>
           </div>
+          <p v-if="loanPaymentsLoading" class="text-[10px] mt-2" style="color: var(--text-muted)">Loading tagged loan transactions...</p>
         </div>
       </aside>
     </div>
@@ -220,6 +228,8 @@ const selectedDateIso = ref(toIsoDate(new Date()))
 const showPlot = ref(false)
 const savingPlot = ref(false)
 const plottedEvents = ref([])
+const loanPaymentEvents = ref([])
+const loanPaymentsLoading = ref(false)
 const plotForm = ref({ date: toIsoDate(new Date()), bill_id: '', name: '', amount: '' })
 
 const totalMonthly = computed(() => bills.value.filter(b => b.is_active).reduce((s, b) => s + b.amount, 0))
@@ -265,12 +275,22 @@ const plottedEventsForMonth = computed(() => {
 
 const eventsByDate = computed(() => {
   const map = {}
-  for (const event of [...recurringEvents.value, ...plottedEventsForMonth.value]) {
+  for (const event of [...recurringEvents.value, ...loanPaymentEvents.value, ...plottedEventsForMonth.value]) {
     if (!map[event.date]) map[event.date] = []
     map[event.date].push(event)
   }
+
+  const priority = {
+    bill: 0,
+    loan_txn: 1,
+    plot: 2,
+  }
+
   for (const key of Object.keys(map)) {
-    map[key].sort((a, b) => (a.type === b.type ? b.amount - a.amount : (a.type === 'bill' ? -1 : 1)))
+    map[key].sort((a, b) => {
+      if (a.type !== b.type) return (priority[a.type] ?? 99) - (priority[b.type] ?? 99)
+      return b.amount - a.amount
+    })
   }
   return map
 })
@@ -304,6 +324,20 @@ const selectedDateLabel = computed(() => new Date(`${selectedDateIso.value}T00:0
 
 const fmt = (v) => Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
+const eventChipStyle = (event) => {
+  if (event.type === 'bill') return 'background: rgba(61,219,184,0.16); color: var(--mint)'
+  if (event.type === 'loan_txn' && event.loanKind === 'mortgage') return 'background: rgba(251,146,60,0.16); color: #fb923c'
+  if (event.type === 'loan_txn' && event.loanKind === 'auto') return 'background: rgba(96,165,250,0.16); color: #60a5fa'
+  return 'background: rgba(148,163,184,0.18); color: #94a3b8'
+}
+
+const eventTypeLabel = (event) => {
+  if (event.type === 'bill') return 'Recurring bill'
+  if (event.type === 'loan_txn' && event.loanKind === 'mortgage') return 'Tagged mortgage payment'
+  if (event.type === 'loan_txn' && event.loanKind === 'auto') return 'Tagged auto loan payment'
+  return 'Plotted day'
+}
+
 function toIsoDate(d) {
   const year = d.getFullYear()
   const month = String(d.getMonth() + 1).padStart(2, '0')
@@ -330,6 +364,76 @@ const prevMonth = () => {
 
 const nextMonth = () => {
   viewMonth.value = new Date(viewMonth.value.getFullYear(), viewMonth.value.getMonth() + 1, 1)
+}
+
+const monthRange = () => {
+  const year = viewMonth.value.getFullYear()
+  const month = viewMonth.value.getMonth()
+  const start = toIsoDate(new Date(year, month, 1))
+  const end = toIsoDate(new Date(year, month + 1, 0))
+  return { start, end }
+}
+
+const fetchLoanCategoryTransactions = async (category) => {
+  const { start, end } = monthRange()
+  const pageSize = 200
+  let offset = 0
+  const rows = []
+
+  while (true) {
+    const params = new URLSearchParams({
+      category,
+      start_date: start,
+      end_date: end,
+      limit: String(pageSize),
+      offset: String(offset),
+    })
+
+    const res = await api.get(`/api/transactions?${params}`)
+    const txns = res.data?.transactions || []
+    rows.push(...txns)
+
+    const total = Number(res.data?.total) || 0
+    offset += txns.length
+    if (txns.length < pageSize || offset >= total) break
+  }
+
+  return rows
+}
+
+const loadLoanPaymentEvents = async () => {
+  loanPaymentsLoading.value = true
+  try {
+    const [mortgageTxns, autoLoanTxns] = await Promise.all([
+      fetchLoanCategoryTransactions('MORTGAGE_PAYMENT'),
+      fetchLoanCategoryTransactions('AUTO_LOAN_PAYMENT'),
+    ])
+
+    const mapped = [
+      ...mortgageTxns.map((txn) => ({
+        id: `loan-m-${txn.id}`,
+        type: 'loan_txn',
+        loanKind: 'mortgage',
+        date: txn.date,
+        name: txn.merchant_name || txn.name || 'Mortgage payment',
+        amount: Math.abs(Number(txn.amount) || 0),
+      })),
+      ...autoLoanTxns.map((txn) => ({
+        id: `loan-a-${txn.id}`,
+        type: 'loan_txn',
+        loanKind: 'auto',
+        date: txn.date,
+        name: txn.merchant_name || txn.name || 'Auto loan payment',
+        amount: Math.abs(Number(txn.amount) || 0),
+      })),
+    ]
+
+    loanPaymentEvents.value = mapped
+  } catch {
+    loanPaymentEvents.value = []
+  } finally {
+    loanPaymentsLoading.value = false
+  }
 }
 
 const loadPlottedEvents = () => {
@@ -434,10 +538,11 @@ watch(viewMonth, () => {
   if (selected.getMonth() !== month || selected.getFullYear() !== year) {
     selectedDateIso.value = toIsoDate(new Date(year, month, 1))
   }
+  loadLoanPaymentEvents()
 })
 
 onMounted(async () => {
   loadPlottedEvents()
-  await load()
+  await Promise.all([load(), loadLoanPaymentEvents()])
 })
 </script>

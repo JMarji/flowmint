@@ -22,6 +22,15 @@
           :loading="taggingTxnId !== null"
         />
         <Button
+          @click="tagSelectedAsAutoLoan"
+          label="Tag As Auto Loan"
+          icon="pi pi-car"
+          size="small"
+          severity="secondary"
+          :disabled="!selectedTransaction || taggingTxnId !== null"
+          :loading="taggingTxnId !== null"
+        />
+        <Button
           v-if="selectedTransaction"
           @click="clearSelection"
           label="Clear"
@@ -104,6 +113,7 @@
                   <span class="text-xs px-2 py-1 rounded-full" style="background: var(--surface-2); color: var(--text-muted)">Category: {{ formatCategory(txn.category) }}</span>
                   <span class="text-xs px-2 py-1 rounded-full" style="background: var(--surface-2); color: var(--text-muted)">Pending: {{ txn.pending ? 'Yes' : 'No' }}</span>
                   <span v-if="txn.is_mortgage_payment" class="text-xs px-2 py-1 rounded-full" style="background: rgba(251,146,60,0.16); color: #fb923c">Mortgage</span>
+                  <span v-if="txn.category === 'AUTO_LOAN_PAYMENT'" class="text-xs px-2 py-1 rounded-full" style="background: rgba(96,165,250,0.18); color: #60a5fa">Auto Loan</span>
                 </div>
 
                 <div class="mt-3 flex gap-2">
@@ -119,6 +129,16 @@
                     @click="tagTransactionAsMortgage(txn.id)"
                     label="Tag As Mortgage"
                     icon="pi pi-home"
+                    size="small"
+                    severity="secondary"
+                    text
+                    :loading="taggingTxnId === txn.id"
+                    :disabled="taggingTxnId !== null"
+                  />
+                  <Button
+                    @click="tagTransactionAsAutoLoan(txn.id)"
+                    label="Tag As Auto Loan"
+                    icon="pi pi-car"
                     size="small"
                     severity="secondary"
                     text
@@ -222,6 +242,7 @@ import { usePlaidSync } from '@/composables/usePlaidSync'
 
 const CATEGORIES = [
   { value: 'MORTGAGE_PAYMENT', label: 'Mortgage Payment' },
+  { value: 'AUTO_LOAN_PAYMENT', label: 'Auto Loan Payment' },
   { value: 'FOOD_AND_DRINK', label: 'Food & Drink' },
   { value: 'TRANSPORTATION', label: 'Transportation' },
   { value: 'UTILITIES', label: 'Utilities' },
@@ -349,31 +370,44 @@ const clearSelection = () => {
   tagStatus.value = ''
 }
 
-const tagTransactionAsMortgage = async (txnId) => {
+const tagTransactionCategory = async (txnId, category, label) => {
   taggingTxnId.value = txnId
   tagStatus.value = ''
   try {
-    await api.patch(`/api/transactions/${txnId}/category`, { category: 'MORTGAGE_PAYMENT' })
+    await api.patch(`/api/transactions/${txnId}/category`, { category })
 
     const txn = transactions.value.find(t => t.id === txnId)
     if (txn) {
-      txn.category_override = 'MORTGAGE_PAYMENT'
-      txn.category = 'MORTGAGE_PAYMENT'
-      txn.is_mortgage_payment = true
+      txn.category_override = category
+      txn.category = category
+      txn.is_mortgage_payment = category === 'MORTGAGE_PAYMENT'
     }
 
     const selectedName = txn?.merchant_name || txn?.name || `#${txnId}`
-    tagStatus.value = `Tagged ${selectedName} as mortgage payment.`
+    tagStatus.value = `Tagged ${selectedName} as ${label}.`
   } catch (e) {
-    tagStatus.value = e?.response?.data?.detail || 'Could not tag transaction as mortgage payment.'
+    tagStatus.value = e?.response?.data?.detail || `Could not tag transaction as ${label}.`
   } finally {
     taggingTxnId.value = null
   }
 }
 
+const tagTransactionAsMortgage = async (txnId) => {
+  await tagTransactionCategory(txnId, 'MORTGAGE_PAYMENT', 'mortgage payment')
+}
+
+const tagTransactionAsAutoLoan = async (txnId) => {
+  await tagTransactionCategory(txnId, 'AUTO_LOAN_PAYMENT', 'auto loan payment')
+}
+
 const tagSelectedAsMortgage = async () => {
   if (!selectedTransaction.value) return
   await tagTransactionAsMortgage(selectedTransaction.value.id)
+}
+
+const tagSelectedAsAutoLoan = async () => {
+  if (!selectedTransaction.value) return
+  await tagTransactionAsAutoLoan(selectedTransaction.value.id)
 }
 
 const selectVendor = (vendorName) => {
@@ -410,6 +444,7 @@ const categoryIcon = (c) => {
   if (!c) return 'pi-receipt'
   const map = {
     MORTGAGE_PAYMENT: 'pi-home',
+    AUTO_LOAN_PAYMENT: 'pi-car',
     FOOD_AND_DRINK: 'pi-shopping-bag', TRANSPORTATION: 'pi-car',
     SHOPPING: 'pi-shopping-cart', ENTERTAINMENT: 'pi-ticket',
     INCOME: 'pi-arrow-down-left', TRANSFER_IN: 'pi-arrow-down-left',
