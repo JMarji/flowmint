@@ -19,6 +19,8 @@ def list_transactions(
     category: Optional[str] = Query(None),
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    vendor: Optional[str] = Query(None),
     current_user: dict = Depends(get_current_user)
 ):
     """Return paginated transactions with optional filters."""
@@ -30,6 +32,30 @@ def list_transactions(
         category=category,
         start_date=start_date,
         end_date=end_date,
+        search=search,
+        vendor=vendor,
+    )
+
+
+@router.get("/transactions/vendors-summary")
+def vendor_summary(
+    account_id: Optional[int] = Query(None, ge=1),
+    category: Optional[str] = Query(None),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    top_n: Optional[int] = Query(None, ge=1, le=5000),
+    current_user: dict = Depends(get_current_user)
+):
+    """Return vendor-level spend aggregates across all filtered transactions."""
+    return db_plaid.get_vendor_summary_for_user(
+        user_id=current_user["id"],
+        account_id=account_id,
+        category=category,
+        start_date=start_date,
+        end_date=end_date,
+        search=search,
+        top_n=top_n,
     )
 
 
