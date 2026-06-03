@@ -1,15 +1,19 @@
 <template>
-  <div class="p-6 max-w-4xl mx-auto">
-    <div class="flex items-center justify-between mb-8">
+  <div class="p-6 max-w-6xl mx-auto">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
       <div>
         <h1 class="text-2xl font-bold" style="color: var(--text)">Bills</h1>
-        <p class="text-sm mt-1" style="color: var(--text-muted)">Recurring payments — ${{ fmt(totalMonthly) }}/mo</p>
+        <p class="text-sm mt-1" style="color: var(--text-muted)">
+          Monthly calendar with recurring withdrawals - ${{ fmt(totalMonthly) }}/mo
+        </p>
       </div>
-      <Button @click="showAdd = true" label="Add Bill" icon="pi pi-plus" class="p-button-primary" />
+      <div class="flex gap-2">
+        <Button @click="openPlotDialog(selectedDateIso)" label="Plot Day" icon="pi pi-calendar-plus" severity="secondary" />
+        <Button @click="showAdd = true" label="Add Bill" icon="pi pi-plus" class="p-button-primary" />
+      </div>
     </div>
 
-    <!-- Upcoming banner -->
-    <div v-if="upcoming.length" class="rounded-xl border p-4 mb-6 flex items-center gap-3" style="background: var(--surface); border-color: var(--mint)">
+    <div v-if="upcoming.length" class="rounded-xl border p-4 mb-5 flex items-center gap-3" style="background: var(--surface); border-color: var(--mint)">
       <i class="pi pi-bell text-lg" style="color: var(--mint)"></i>
       <div>
         <p class="text-sm font-medium" style="color: var(--text)">{{ upcoming.length }} bill{{ upcoming.length > 1 ? 's' : '' }} due in the next 7 days</p>
@@ -17,145 +21,141 @@
       </div>
     </div>
 
-    <!-- Empty -->
-    <div v-if="!loading && bills.length === 0" class="rounded-xl border p-12 flex flex-col items-center gap-3 text-center" style="background: var(--surface); border-color: var(--border); border-style: dashed">
-      <i class="pi pi-calendar-clock text-3xl" style="color: var(--mint)"></i>
-      <p class="text-sm font-medium" style="color: var(--text)">No bills added yet</p>
-      <Button @click="showAdd = true" label="Add your first bill" class="p-button-primary mt-1" size="small" />
+    <div class="grid lg:grid-cols-12 gap-4">
+      <section class="lg:col-span-9 rounded-xl border p-4" style="background: var(--surface); border-color: var(--border)">
+        <div class="flex items-center justify-between mb-3">
+          <Button icon="pi pi-chevron-left" severity="secondary" text rounded @click="prevMonth" />
+          <p class="text-sm font-semibold" style="color: var(--text)">{{ monthLabel }}</p>
+          <Button icon="pi pi-chevron-right" severity="secondary" text rounded @click="nextMonth" />
+        </div>
+
+        <div class="grid grid-cols-7 gap-1 mb-1">
+          <p v-for="wd in WEEK_DAYS" :key="wd" class="text-[11px] text-center py-1" style="color: var(--text-muted)">{{ wd }}</p>
+        </div>
+
+        <div class="grid grid-cols-7 gap-1">
+          <button
+            v-for="cell in calendarCells"
+            :key="cell.iso"
+            @click="selectedDateIso = cell.iso"
+            class="min-h-[108px] rounded-lg border p-2 text-left transition"
+            :style="cellStyle(cell)"
+          >
+            <div class="flex items-center justify-between mb-1">
+              <p class="text-xs font-medium" :style="cellDayStyle(cell)">{{ cell.day }}</p>
+              <i v-if="cell.isToday" class="pi pi-circle-fill text-[8px]" style="color: var(--mint)"></i>
+            </div>
+            <div class="space-y-1">
+              <div
+                v-for="event in cell.events.slice(0, 3)"
+                :key="event.id"
+                class="text-[10px] px-1.5 py-1 rounded truncate"
+                :style="event.type === 'bill' ? 'background: rgba(61,219,184,0.16); color: var(--mint)' : 'background: rgba(96,165,250,0.16); color: #60a5fa'"
+                :title="`${event.name} · $${fmt(event.amount)}`"
+              >
+                {{ event.name }} · ${{ fmt(event.amount) }}
+              </div>
+              <p v-if="cell.events.length > 3" class="text-[10px]" style="color: var(--text-muted)">+{{ cell.events.length - 3 }} more</p>
+            </div>
+          </button>
+        </div>
+
+        <div v-if="!loading && bills.length === 0" class="rounded-xl border p-8 mt-4 flex flex-col items-center gap-2 text-center" style="background: var(--surface-2); border-color: var(--border); border-style: dashed">
+          <i class="pi pi-calendar-clock text-2xl" style="color: var(--mint)"></i>
+          <p class="text-sm" style="color: var(--text)">No recurring bills yet</p>
+          <Button @click="showAdd = true" label="Add your first bill" class="p-button-primary" size="small" />
+        </div>
+      </section>
+
+      <aside class="lg:col-span-3 rounded-xl border p-4" style="background: var(--surface); border-color: var(--border)">
+        <p class="text-xs mb-1" style="color: var(--text-muted)">Selected Day</p>
+        <p class="text-sm font-semibold mb-3" style="color: var(--text)">{{ selectedDateLabel }}</p>
+
+        <div v-if="selectedEvents.length === 0" class="rounded-lg border p-3 text-xs" style="border-color: var(--border); color: var(--text-muted)">
+          No scheduled bill activity.
+        </div>
+
+        <div v-else class="space-y-2">
+          <div v-for="event in selectedEvents" :key="event.id" class="rounded-lg border p-2.5" style="border-color: var(--border); background: var(--surface-2)">
+            <p class="text-xs font-medium" style="color: var(--text)">{{ event.name }}</p>
+            <p class="text-[11px]" style="color: var(--text-muted)">${{ fmt(event.amount) }} · {{ event.type === 'bill' ? 'Recurring bill' : 'Plotted day' }}</p>
+            <div class="flex gap-1 mt-2">
+              <Button
+                v-if="event.type === 'bill'"
+                @click="markPaid(event.bill)"
+                icon="pi pi-check"
+                text
+                rounded
+                severity="secondary"
+                size="small"
+                title="Mark paid"
+              />
+              <Button
+                v-if="event.type === 'bill'"
+                @click="openPlotDialog(selectedDateIso, event.bill)"
+                icon="pi pi-calendar-plus"
+                text
+                rounded
+                severity="secondary"
+                size="small"
+                title="Plot transaction day"
+              />
+              <Button
+                v-if="event.type === 'plot'"
+                @click="removePlotEvent(event.id)"
+                icon="pi pi-trash"
+                text
+                rounded
+                severity="secondary"
+                size="small"
+                title="Remove plotted day"
+              />
+            </div>
+          </div>
+        </div>
+
+        <Button @click="openPlotDialog(selectedDateIso)" label="Plot On This Day" icon="pi pi-calendar-plus" class="w-full mt-3" severity="secondary" />
+
+        <div class="border-t mt-4 pt-3" style="border-color: var(--border)">
+          <p class="text-xs mb-2" style="color: var(--text-muted)">Recurring Bills</p>
+          <div v-if="loading" class="text-xs" style="color: var(--text-muted)">Loading...</div>
+          <div v-else class="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+            <div v-for="bill in bills" :key="bill.id" class="rounded-md px-2 py-1.5 flex items-center justify-between" style="background: var(--surface-2)">
+              <div class="min-w-0">
+                <p class="text-xs truncate" style="color: var(--text)">{{ bill.name }}</p>
+                <p class="text-[10px]" style="color: var(--text-muted)">Day {{ bill.due_day_of_month }}</p>
+              </div>
+              <Button @click="deleteBill(bill.id)" icon="pi pi-trash" text rounded severity="secondary" size="small" />
+            </div>
+          </div>
+        </div>
+      </aside>
     </div>
 
-    <div class="space-y-3">
-      <div class="p-6 max-w-6xl mx-auto">
-        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
-        <div class="w-12 h-12 rounded-xl flex flex-col items-center justify-center flex-shrink-0" style="background: var(--surface-2)">
-          <p class="text-lg font-bold leading-none" style="color: var(--mint)">{{ bill.due_day_of_month }}</p>
-            <p class="text-sm mt-1" style="color: var(--text-muted)">
-              Monthly calendar with recurring withdrawals · ${{ fmt(totalMonthly) }}/mo
-            </p>
+    <Dialog v-model:visible="showAdd" header="Add Bill" modal :style="{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)', width: '360px' }">
+      <div class="space-y-4 py-2">
+        <div>
+          <label class="block text-xs mb-1.5" style="color: var(--text-muted)">Name</label>
+          <InputText v-model="form.name" class="w-full" placeholder="Netflix, Mortgage, etc." />
         </div>
-          <div class="flex gap-2">
-            <Button @click="openPlotDialog(selectedDateIso)" label="Plot Day" icon="pi pi-calendar-plus" severity="secondary" />
-            <Button @click="showAdd = true" label="Add Bill" icon="pi pi-plus" class="p-button-primary" />
-          </div>
-        <div class="flex-1 min-w-0">
-          <p class="text-sm font-medium" style="color: var(--text)">{{ bill.name }}</p>
-        <div v-if="upcoming.length" class="rounded-xl border p-4 mb-5 flex items-center gap-3" style="background: var(--surface); border-color: var(--mint)">
-            <span v-if="bill.last_paid_date" class="ml-2">· Paid {{ bill.last_paid_date }}</span>
-          </p>
-        </div>
-
-        <p class="text-base font-bold flex-shrink-0" style="color: var(--text)">${{ fmt(bill.amount) }}</p>
-
-        <div class="flex gap-1 flex-shrink-0">
-        <div class="grid lg:grid-cols-12 gap-4">
-          <section class="lg:col-span-9 rounded-xl border p-4" style="background: var(--surface); border-color: var(--border)">
-            <div class="flex items-center justify-between mb-3">
-              <Button icon="pi pi-chevron-left" severity="secondary" text rounded @click="prevMonth" />
-              <p class="text-sm font-semibold" style="color: var(--text)">{{ monthLabel }}</p>
-              <Button icon="pi pi-chevron-right" severity="secondary" text rounded @click="nextMonth" />
         <div class="grid grid-cols-2 gap-3">
           <div>
-            <div class="grid grid-cols-7 gap-1 mb-1">
-              <p v-for="wd in WEEK_DAYS" :key="wd" class="text-[11px] text-center py-1" style="color: var(--text-muted)">{{ wd }}</p>
+            <label class="block text-xs mb-1.5" style="color: var(--text-muted)">Amount ($)</label>
+            <InputText v-model="form.amount" type="number" min="0.01" step="0.01" class="w-full" placeholder="0.00" />
+          </div>
+          <div>
+            <label class="block text-xs mb-1.5" style="color: var(--text-muted)">Due day of month</label>
+            <InputText v-model="form.due_day_of_month" type="number" min="1" max="31" class="w-full" placeholder="1-31" />
           </div>
         </div>
-            <div class="grid grid-cols-7 gap-1">
-              <button
-                v-for="cell in calendarCells"
-                :key="cell.iso"
-                @click="selectedDateIso = cell.iso"
-                class="min-h-[108px] rounded-lg border p-2 text-left transition"
-                :style="cellStyle(cell)"
-              >
-                <div class="flex items-center justify-between mb-1">
-                  <p class="text-xs font-medium" :style="cellDayStyle(cell)">{{ cell.day }}</p>
-                  <i v-if="cell.isToday" class="pi pi-circle-fill text-[8px]" style="color: var(--mint)"></i>
-                </div>
-                <div class="space-y-1">
-                  <div
-                    v-for="event in cell.events.slice(0, 3)"
-                    :key="event.id"
-                    class="text-[10px] px-1.5 py-1 rounded truncate"
-                    :style="event.type === 'bill' ? 'background: rgba(61,219,184,0.16); color: var(--mint)' : 'background: rgba(96,165,250,0.16); color: #60a5fa'"
-                    :title="`${event.name} · $${fmt(event.amount)}`"
-                  >
-                    {{ event.name }} · ${{ fmt(event.amount) }}
-                  </div>
-                  <p v-if="cell.events.length > 3" class="text-[10px]" style="color: var(--text-muted)">+{{ cell.events.length - 3 }} more</p>
-                </div>
-              </button>
-            </div>
-
-            <div v-if="!loading && bills.length === 0" class="rounded-xl border p-8 mt-4 flex flex-col items-center gap-2 text-center" style="background: var(--surface-2); border-color: var(--border); border-style: dashed">
-              <i class="pi pi-calendar-clock text-2xl" style="color: var(--mint)"></i>
-              <p class="text-sm" style="color: var(--text)">No recurring bills yet</p>
-              <Button @click="showAdd = true" label="Add your first bill" class="p-button-primary" size="small" />
+        <div>
           <label class="block text-xs mb-1.5" style="color: var(--text-muted)">Category (optional)</label>
-          </section>
           <select v-model="form.category" class="w-full px-3 py-2 rounded-lg text-sm" style="background: var(--surface-2); border: 1px solid var(--border); color: var(--text)">
-          <aside class="lg:col-span-3 rounded-xl border p-4" style="background: var(--surface); border-color: var(--border)">
-            <p class="text-xs mb-1" style="color: var(--text-muted)">Selected Day</p>
-            <p class="text-sm font-semibold mb-3" style="color: var(--text)">{{ selectedDateLabel }}</p>
-
-            <div v-if="selectedEvents.length === 0" class="rounded-lg border p-3 text-xs" style="border-color: var(--border); color: var(--text-muted)">
-              No scheduled bill activity.
+            <option value="">None</option>
+            <option value="RENT_AND_UTILITIES">Rent & Utilities</option>
+            <option value="SUBSCRIPTION">Subscription</option>
             <option value="INSURANCE">Insurance</option>
-
-            <div v-else class="space-y-2">
-              <div v-for="event in selectedEvents" :key="event.id" class="rounded-lg border p-2.5" style="border-color: var(--border); background: var(--surface-2)">
-                <p class="text-xs font-medium" style="color: var(--text)">{{ event.name }}</p>
-                <p class="text-[11px]" style="color: var(--text-muted)">${{ fmt(event.amount) }} · {{ event.type === 'bill' ? 'Recurring bill' : 'Plotted day' }}</p>
-                <div class="flex gap-1 mt-2">
-                  <Button
-                    v-if="event.type === 'bill'"
-                    @click="markPaid(event.bill)"
-                    icon="pi pi-check"
-                    text
-                    rounded
-                    severity="secondary"
-                    size="small"
-                    title="Mark paid"
-                  />
-                  <Button
-                    v-if="event.type === 'bill'"
-                    @click="openPlotDialog(selectedDateIso, event.bill)"
-                    icon="pi pi-calendar-plus"
-                    text
-                    rounded
-                    severity="secondary"
-                    size="small"
-                    title="Plot transaction day"
-                  />
-                  <Button
-                    v-if="event.type === 'plot'"
-                    @click="removePlotEvent(event.id)"
-                    icon="pi pi-trash"
-                    text
-                    rounded
-                    severity="secondary"
-                    size="small"
-                    title="Remove plotted day"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <Button @click="openPlotDialog(selectedDateIso)" label="Plot On This Day" icon="pi pi-calendar-plus" class="w-full mt-3" severity="secondary" />
-
-            <div class="border-t mt-4 pt-3" style="border-color: var(--border)">
-              <p class="text-xs mb-2" style="color: var(--text-muted)">Recurring Bills</p>
-              <div v-if="loading" class="text-xs" style="color: var(--text-muted)">Loading…</div>
-              <div v-else class="space-y-1.5 max-h-56 overflow-y-auto pr-1">
-                <div v-for="bill in bills" :key="bill.id" class="rounded-md px-2 py-1.5 flex items-center justify-between" style="background: var(--surface-2)">
-                  <div class="min-w-0">
-                    <p class="text-xs truncate" style="color: var(--text)">{{ bill.name }}</p>
-                    <p class="text-[10px]" style="color: var(--text-muted)">Day {{ bill.due_day_of_month }}</p>
-                  </div>
-                  <Button @click="deleteBill(bill.id)" icon="pi pi-trash" text rounded severity="secondary" size="small" />
-                </div>
-              </div>
-            </div>
-          </aside>
+            <option value="LOAN">Loan</option>
             <option value="OTHER">Other</option>
           </select>
         </div>
@@ -303,7 +303,6 @@ const selectedDateLabel = computed(() => new Date(`${selectedDateIso.value}T00:0
 }))
 
 const fmt = (v) => Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-const fmtCat = (c) => c?.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, l => l.toUpperCase())
 
 function toIsoDate(d) {
   const year = d.getFullYear()
@@ -393,19 +392,29 @@ const removePlotEvent = (id) => {
 
 const load = async () => {
   loading.value = true
-  try { const res = await api.get('/api/bills'); bills.value = res.data }
-  finally { loading.value = false }
+  try {
+    const res = await api.get('/api/bills')
+    bills.value = res.data
+  } finally {
+    loading.value = false
+  }
 }
 
 const addBill = async () => {
   if (!form.value.name || !form.value.amount || !form.value.due_day_of_month) return
   saving.value = true
   try {
-    await api.post('/api/bills', { ...form.value, amount: Number(form.value.amount), due_day_of_month: Number(form.value.due_day_of_month) })
+    await api.post('/api/bills', {
+      ...form.value,
+      amount: Number(form.value.amount),
+      due_day_of_month: Number(form.value.due_day_of_month),
+    })
     showAdd.value = false
     form.value = { name: '', amount: '', due_day_of_month: '', category: '', notes: '' }
     await load()
-  } finally { saving.value = false }
+  } finally {
+    saving.value = false
+  }
 }
 
 const markPaid = async (bill) => {
