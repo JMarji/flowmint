@@ -30,6 +30,28 @@
           :disabled="!selectedTransaction || taggingTxnId !== null"
           :loading="taggingTxnId !== null"
         />
+        <div v-if="selectedTransaction && isMortgageTransaction(selectedTransaction)" class="flex items-center gap-2 flex-wrap">
+          <select
+            v-model="selectedMortgagePropertyId"
+            class="px-3 py-2 rounded-lg text-sm"
+            style="background: var(--surface-2); border: 1px solid var(--border); color: var(--text); min-width: 14rem"
+            :disabled="linkingTxnId !== null"
+          >
+            <option value="">No linked property</option>
+            <option v-for="prop in propertyOptions" :key="prop.id" :value="String(prop.id)">
+              {{ propertyLabel(prop) }}
+            </option>
+          </select>
+          <Button
+            @click="saveSelectedMortgageProperty"
+            :label="selectedMortgagePropertyId ? 'Save Property Link' : 'Clear Property Link'"
+            icon="pi pi-link"
+            size="small"
+            severity="secondary"
+            :disabled="linkingTxnId !== null"
+            :loading="linkingTxnId !== null"
+          />
+        </div>
         <Button
           v-if="selectedTransaction"
           @click="clearSelection"
@@ -114,6 +136,7 @@
                   <span class="text-xs px-2 py-1 rounded-full" style="background: var(--surface-2); color: var(--text-muted)">Pending: {{ txn.pending ? 'Yes' : 'No' }}</span>
                   <span v-if="txn.is_mortgage_payment" class="text-xs px-2 py-1 rounded-full" style="background: rgba(251,146,60,0.16); color: #fb923c">Mortgage</span>
                   <span v-if="txn.category === 'AUTO_LOAN_PAYMENT'" class="text-xs px-2 py-1 rounded-full" style="background: rgba(96,165,250,0.18); color: #60a5fa">Auto Loan</span>
+                  <span v-if="txn.mortgage_property_id" class="text-xs px-2 py-1 rounded-full" style="background: rgba(251,146,60,0.22); color: #fdba74">Property: {{ txn.mortgage_property_address || `#${txn.mortgage_property_id}` }}</span>
                 </div>
 
                 <div class="mt-3 flex gap-2">
@@ -204,6 +227,10 @@
                     <dt style="color: var(--text-muted)">Synced At</dt>
                     <dd style="color: var(--text)">{{ formatDateTime(txn.synced_at) }}</dd>
                   </div>
+                  <div>
+                    <dt style="color: var(--text-muted)">Mortgage Property</dt>
+                    <dd style="color: var(--text)">{{ txn.mortgage_property_address || (txn.mortgage_property_id ? `#${txn.mortgage_property_id}` : '—') }}</dd>
+                  </div>
                 </dl>
               </div>
             </div>
@@ -233,7 +260,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import InputText from 'primevue/inputtext'
 import Button from 'primevue/button'
 import api from '@/utils/api'
@@ -270,6 +297,9 @@ const offset = ref(0)
 const selectedTxnId = ref(null)
 const taggingTxnId = ref(null)
 const tagStatus = ref('')
+const linkingTxnId = ref(null)
+const propertyOptions = ref([])
+const selectedMortgagePropertyId = ref('')
 const vendorSummary = ref({ vendors: [], vendor_count: 0, total_outflow: 0 })
 const summaryLoading = ref(false)
 let searchTimer = null
@@ -362,12 +392,24 @@ const applyFilters = () => {
 
 const selectTransaction = (txn) => {
   selectedTxnId.value = txn.id
+  selectedMortgagePropertyId.value = txn?.mortgage_property_id ? String(txn.mortgage_property_id) : ''
   tagStatus.value = ''
 }
 
 const clearSelection = () => {
   selectedTxnId.value = null
+  selectedMortgagePropertyId.value = ''
   tagStatus.value = ''
+}
+
+const isMortgageTransaction = (txn) => {
+  return txn?.category === 'MORTGAGE_PAYMENT' || txn?.is_mortgage_payment === true
+}
+
+const propertyLabel = (property) => {
+  if (!property) return 'Unknown property'
+  const cityState = [property.city, property.state].filter(Boolean).join(', ')
+  return cityState ? `${property.address} (${cityState})` : property.address
 }
 
 const tagTransactionCategory = async (txnId, category, label) => {
@@ -410,6 +452,36 @@ const tagSelectedAsAutoLoan = async () => {
   await tagTransactionAsAutoLoan(selectedTransaction.value.id)
 }
 
+const saveSelectedMortgageProperty = async () => {
+  if (!selectedTransaction.value || !isMortgageTransaction(selectedTransaction.value)) return
+
+  const txnId = selectedTransaction.value.id
+  const propertyId = selectedMortgagePropertyId.value ? Number(selectedMortgagePropertyId.value) : null
+  linkingTxnId.value = txnId
+  tagStatus.value = ''
+
+  try {
+    await api.patch(`/api/transactions/${txnId}/mortgage-property`, { property_id: propertyId })
+
+    const txn = transactions.value.find(t => t.id === txnId)
+    if (txn) {
+      txn.mortgage_property_id = propertyId
+      txn.mortgage_property_address = propertyId
+        ? (propertyOptions.value.find(p => p.id === propertyId)?.address || null)
+        : null
+    }
+
+    const selectedName = txn?.merchant_name || txn?.name || `#${txnId}`
+    tagStatus.value = propertyId
+      ? `Linked ${selectedName} to ${txn?.mortgage_property_address || 'selected property'}.`
+      : `Cleared property link for ${selectedName}.`
+  } catch (e) {
+    tagStatus.value = e?.response?.data?.detail || 'Could not update mortgage property link.'
+  } finally {
+    linkingTxnId.value = null
+  }
+}
+
 const selectVendor = (vendorName) => {
   if (selectedVendor.value === vendorName) {
     selectedVendor.value = ''
@@ -426,6 +498,19 @@ const loadAccounts = async () => {
     accountOptions.value = (res.data || []).filter(a => Number.isInteger(a.id) && a.item_db_id !== null)
   } catch (e) {
     accountOptions.value = []
+  }
+}
+
+const loadProperties = async () => {
+  try {
+    const res = await api.get('/api/properties')
+    propertyOptions.value = Array.isArray(res.data)
+      ? res.data
+          .filter(p => Number.isInteger(p?.id))
+          .map(p => ({ id: p.id, address: p.address || `Property #${p.id}`, city: p.city, state: p.state }))
+      : []
+  } catch (e) {
+    propertyOptions.value = []
   }
 }
 
@@ -454,11 +539,15 @@ const categoryIcon = (c) => {
   return map[c] || 'pi-receipt'
 }
 
+watch(selectedTransaction, (txn) => {
+  selectedMortgagePropertyId.value = txn?.mortgage_property_id ? String(txn.mortgage_property_id) : ''
+})
+
 onMounted(async () => {
   try {
     await syncIfStale({ maxAgeMs: 3 * 60_000 })
   } catch (e) {}
-  await loadAccounts()
+  await Promise.all([loadAccounts(), loadProperties()])
   await load()
 })
 </script>

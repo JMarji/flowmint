@@ -364,12 +364,16 @@ def get_transactions_for_user(
                        t.category_primary, t.category_detailed, t.category_override,
                        t.pending, t.logo_url, t.synced_at,
                       ba.name AS account_name, bi.institution_name,
-                      CASE WHEN {effective_category_sql} = 'MORTGAGE_PAYMENT' THEN TRUE ELSE FALSE END AS is_mortgage_payment
+                                            CASE WHEN {effective_category_sql} = 'MORTGAGE_PAYMENT' THEN TRUE ELSE FALSE END AS is_mortgage_payment,
+                                            t.mortgage_property_id,
+                                            lp.address AS mortgage_property_address
                 FROM flowmint.transactions t
                 JOIN flowmint.bank_accounts ba ON t.account_id = ba.id
                 JOIN flowmint.bank_items bi ON ba.item_id = bi.id
-                  LEFT JOIN flowmint.properties p
-                    ON p.mortgage_account_id = ba.account_id AND p.user_id = bi.user_id
+                                LEFT JOIN flowmint.properties p
+                                    ON p.mortgage_account_id = ba.account_id AND p.user_id = bi.user_id
+                                LEFT JOIN flowmint.properties lp
+                                    ON lp.id = t.mortgage_property_id AND lp.user_id = bi.user_id
                 WHERE {where}
                 ORDER BY t.date DESC, t.id DESC
                 LIMIT %s OFFSET %s
@@ -396,6 +400,8 @@ def get_transactions_for_user(
             "account_name": r[13],
             "institution_name": r[14],
             "is_mortgage_payment": bool(r[15]),
+            "mortgage_property_id": r[16],
+            "mortgage_property_address": r[17],
         }
         for r in rows
     ]
@@ -519,6 +525,49 @@ def override_transaction_category(txn_id: int, user_id: int, category: str) -> b
                 WHERE t.id = %s AND t.account_id = ba.id AND bi.user_id = %s
                 """,
                 (category, txn_id, user_id)
+            )
+            affected = cur.rowcount
+            conn.commit()
+            return affected > 0
+
+
+def user_owns_property(user_id: int, property_id: int) -> bool:
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM flowmint.properties WHERE id = %s AND user_id = %s",
+                (property_id, user_id)
+            )
+            return cur.fetchone() is not None
+
+
+def override_transaction_mortgage_property(txn_id: int, user_id: int, property_id: Optional[int]) -> bool:
+    effective_category_sql = """COALESCE(
+        t.category_override,
+        CASE
+            WHEN (p.id IS NOT NULL OR LOWER(COALESCE(ba.subtype, '')) = 'mortgage')
+                 AND t.amount > 0
+                THEN 'MORTGAGE_PAYMENT'
+            ELSE t.category_primary
+        END
+    )"""
+
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE flowmint.transactions t
+                SET mortgage_property_id = %s
+                FROM flowmint.bank_accounts ba
+                JOIN flowmint.bank_items bi ON ba.item_id = bi.id
+                LEFT JOIN flowmint.properties p
+                  ON p.mortgage_account_id = ba.account_id AND p.user_id = bi.user_id
+                WHERE t.id = %s
+                  AND t.account_id = ba.id
+                  AND bi.user_id = %s
+                  AND ({effective_category_sql} = 'MORTGAGE_PAYMENT')
+                """,
+                (property_id, txn_id, user_id)
             )
             affected = cur.rowcount
             conn.commit()

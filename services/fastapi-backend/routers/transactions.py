@@ -11,6 +11,10 @@ class CategoryOverride(BaseModel):
     category: str
 
 
+class MortgagePropertyLink(BaseModel):
+    property_id: Optional[int] = None
+
+
 @router.get("/transactions")
 def list_transactions(
     limit: int = Query(50, le=200),
@@ -65,3 +69,15 @@ def override_category(txn_id: int, body: CategoryOverride, current_user: dict = 
     if not updated:
         raise HTTPException(status_code=404, detail="Transaction not found")
     return {"updated": txn_id}
+
+
+@router.patch("/transactions/{txn_id}/mortgage-property")
+def override_mortgage_property(txn_id: int, body: MortgagePropertyLink, current_user: dict = Depends(get_current_user)):
+    if body.property_id is not None and not db_plaid.user_owns_property(current_user["id"], body.property_id):
+        raise HTTPException(status_code=404, detail="Property not found")
+
+    updated = db_plaid.override_transaction_mortgage_property(txn_id, current_user["id"], body.property_id)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Mortgage transaction not found")
+
+    return {"updated": txn_id, "property_id": body.property_id}

@@ -79,5 +79,25 @@ def run_migrations():
                 ADD COLUMN IF NOT EXISTS mortgage_account_id TEXT
                 REFERENCES flowmint.bank_accounts(account_id) ON DELETE SET NULL
             """)
+            cur.execute("""
+                ALTER TABLE flowmint.transactions
+                ADD COLUMN IF NOT EXISTS mortgage_property_id INTEGER
+            """)
+            cur.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM pg_constraint
+                        WHERE conname = 'transactions_mortgage_property_id_fkey'
+                    ) THEN
+                        ALTER TABLE flowmint.transactions
+                        ADD CONSTRAINT transactions_mortgage_property_id_fkey
+                        FOREIGN KEY (mortgage_property_id)
+                        REFERENCES flowmint.properties(id)
+                        ON DELETE SET NULL;
+                    END IF;
+                END $$;
+            """)
             conn.commit()
     logger.info("Migrations complete")
