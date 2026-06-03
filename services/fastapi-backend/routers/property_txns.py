@@ -36,42 +36,86 @@ def list_property_transactions(
     if not _verify_property_owner(property_id, current_user["id"]):
         raise HTTPException(status_code=404, detail="Property not found")
 
-    conditions = ["property_id = %s"]
-    params: list = [property_id]
-    if txn_type:
-        conditions.append("type = %s")
-        params.append(txn_type)
-
-    where = " AND ".join(conditions)
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                f"""SELECT COUNT(*) FROM flowmint.property_transactions WHERE {where}""",
-                params
+                """SELECT id, type, amount, date, category, description, created_at
+                   FROM flowmint.property_transactions
+                   WHERE property_id = %s""",
+                (property_id,)
             )
-            total = cur.fetchone()[0]
-            cur.execute(
-                f"""SELECT id, type, amount, date, category, description, created_at
-                    FROM flowmint.property_transactions
-                    WHERE {where}
-                    ORDER BY date DESC, id DESC
-                    LIMIT %s OFFSET %s""",
-                params + [limit, offset]
-            )
-            rows = cur.fetchall()
+            manual_rows = cur.fetchall()
 
-    txns = [
-        {
-            "id": r[0], "type": r[1], "amount": float(r[2]),
-            "date": str(r[3]), "category": r[4], "description": r[5],
-            "created_at": r[6].isoformat(),
-        }
-        for r in rows
-    ]
-    # Monthly summary
+            cur.execute(
+                """
+                SELECT t.id,
+                       t.amount,
+                       t.date,
+                       COALESCE(NULLIF(TRIM(COALESCE(t.merchant_name, t.name, '')), ''), 'Linked mortgage payment') AS label,
+                       COALESCE(t.category_override, t.category_primary) AS category,
+                       t.synced_at,
+                       ba.name,
+                       bi.institution_name
+                FROM flowmint.transactions t
+                JOIN flowmint.bank_accounts ba ON t.account_id = ba.id
+                JOIN flowmint.bank_items bi ON ba.item_id = bi.id
+                WHERE t.mortgage_property_id = %s
+                  AND bi.user_id = %s
+                ORDER BY t.date DESC, t.id DESC
+                """,
+                (property_id, current_user["id"])
+            )
+            linked_rows = cur.fetchall()
+
+    txns = []
+
+    for row in manual_rows:
+        txns.append(
+            {
+                "id": row[0],
+                "type": row[1],
+                "amount": float(row[2]),
+                "date": str(row[3]),
+                "category": row[4],
+                "description": row[5],
+                "created_at": row[6].isoformat(),
+                "source": "property_transaction",
+            }
+        )
+
+    for row in linked_rows:
+        amount = float(row[1]) if row[1] is not None else 0.0
+        linked_type = "expense" if amount >= 0 else "income"
+        txns.append(
+            {
+                "id": f"linked-{row[0]}",
+                "type": linked_type,
+                "amount": abs(amount),
+                "date": str(row[2]),
+                "category": row[4] or "MORTGAGE_PAYMENT",
+                "description": f"{row[3]} ({row[7] or row[6] or 'Linked account'})",
+                "created_at": row[5].isoformat() if row[5] else None,
+                "source": "linked_transaction",
+            }
+        )
+
+    if txn_type:
+        txns = [t for t in txns if t["type"] == txn_type]
+
+    txns.sort(key=lambda t: (t["date"], str(t["id"])), reverse=True)
+    total = len(txns)
+    paged = txns[offset:offset + limit]
+
     income = sum(t["amount"] for t in txns if t["type"] == "income")
     expenses = sum(t["amount"] for t in txns if t["type"] == "expense")
-    return {"transactions": txns, "total": total, "income": income, "expenses": expenses, "net": income - expenses}
+
+    return {
+        "transactions": paged,
+        "total": total,
+        "income": income,
+        "expenses": expenses,
+        "net": income - expenses,
+    }
 
 
 @router.post("/properties/{property_id}/transactions", status_code=201)

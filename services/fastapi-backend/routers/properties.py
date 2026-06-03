@@ -701,6 +701,53 @@ def _get_mortgage_rows(property_id: int, start_date: date, end_date: date) -> li
             return cur.fetchall()
 
 
+def _get_linked_mortgage_payment_rows(property_id: int, end_date: date) -> list[tuple]:
+    """Return mortgage-linked bank transactions attached to this property."""
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT t.date, t.amount
+                FROM flowmint.transactions t
+                WHERE t.mortgage_property_id = %s
+                  AND t.date <= %s
+                  AND t.amount > 0
+                ORDER BY t.date ASC, t.id ASC
+                """,
+                (property_id, end_date)
+            )
+            return cur.fetchall()
+
+
+def _estimate_principal_from_linked_payments(
+    debt_seed: float,
+    annual_rate_pct: Optional[float],
+    rows: list[tuple],
+) -> tuple[dict[str, float], float]:
+    """
+    Estimate principal paid per month from linked mortgage transactions.
+    Used when no aggregator-backed mortgage account is linked.
+    """
+    balance = max(float(debt_seed or 0.0), 0.0)
+    monthly_rate = max(float(annual_rate_pct or 0.0), 0.0) / 100.0 / 12.0
+    principal_by_month: dict[str, float] = {}
+
+    for d, amount in rows:
+        payment = max(float(amount or 0.0), 0.0)
+        if payment <= 0 or balance <= 0:
+            continue
+
+        interest_component = balance * monthly_rate if monthly_rate > 0 else 0.0
+        principal_component = max(payment - interest_component, 0.0)
+        principal_component = min(principal_component, balance)
+
+        balance = max(balance - principal_component, 0.0)
+        key = _month_key(d)
+        principal_by_month[key] = principal_by_month.get(key, 0.0) + principal_component
+
+    return principal_by_month, balance
+
+
 def _extract_principal_amount(amount: float, description: Optional[str]) -> float:
     if description:
         m = _PRINCIPAL_RE.search(description)
@@ -766,6 +813,20 @@ def _build_property_analytics(property_obj: dict, months: int) -> dict:
         key = _month_key(d)
         if key in principal_by_month:
             principal_by_month[key] += _extract_principal_amount(float(amount), description)
+
+    # If the property is not linked to a live aggregator mortgage account,
+    # estimate principal paid from linked mortgage transactions and reduce debt.
+    if not property_obj.get("mortgage_account_id") and debt_now > 0:
+        linked_rows = _get_linked_mortgage_payment_rows(property_obj["id"], today)
+        linked_principal_by_month, adjusted_debt_now = _estimate_principal_from_linked_payments(
+            debt_seed=debt_now,
+            annual_rate_pct=property_obj.get("mortgage_rate"),
+            rows=linked_rows,
+        )
+        debt_now = adjusted_debt_now
+        for key, principal_amount in linked_principal_by_month.items():
+            if key in principal_by_month:
+                principal_by_month[key] += principal_amount
 
     # Reconstruct debt history by rolling backward from current debt.
     debt_by_month: dict[str, float] = {}

@@ -149,7 +149,7 @@
             </button>
           </div>
         </div>
-        <p class="text-lg font-bold" style="color: var(--text)">${{ fmt(property.mortgage_balance) }}</p>
+        <p class="text-lg font-bold" style="color: var(--text)">${{ fmt(displayMortgageBalance) }}</p>
         <p v-if="property.mortgage_account_id" class="text-xs mt-0.5 truncate" style="color: var(--text-muted)">{{ linkedAccountLabel }}</p>
       </div>
       <div class="rounded-xl border p-4" style="background: var(--surface); border-color: var(--border)">
@@ -497,12 +497,14 @@
           </div>
           <div class="flex-1 min-w-0">
             <p class="text-sm" style="color: var(--text)">{{ txn.description || txn.category || txn.type }}</p>
-            <p class="text-xs" style="color: var(--text-muted)">{{ txn.date }}</p>
+            <p class="text-xs" style="color: var(--text-muted)">
+              {{ txn.date }}<span v-if="txn.source === 'linked_transaction'"> · Linked transaction</span>
+            </p>
           </div>
           <p class="font-semibold text-sm" :style="txn.type === 'income' ? 'color: var(--mint)' : 'color: #f87171'">
             {{ txn.type === 'income' ? '+' : '-' }}${{ fmt(txn.amount) }}
           </p>
-          <button @click="deleteTxn(txn.id)" style="color: var(--text-muted)" class="hover:opacity-80">
+          <button v-if="txn.source !== 'linked_transaction'" @click="deleteTxn(txn.id)" style="color: var(--text-muted)" class="hover:opacity-80">
             <i class="pi pi-trash text-xs"></i>
           </button>
         </div>
@@ -779,7 +781,17 @@ const displayCurrentValue = computed(() => {
   if (property.value?.current_value != null) return property.value.current_value
   return analytics.value?.current?.effective_current_value ?? null
 })
+const displayMortgageBalance = computed(() => {
+  if (!property.value) return null
+  if (!property.value.mortgage_account_id && analytics.value?.current?.debt != null) {
+    return analytics.value.current.debt
+  }
+  return property.value.mortgage_balance
+})
 const displayEquity = computed(() => {
+  if (analytics.value?.current?.equity != null) {
+    return analytics.value.current.equity
+  }
   if (property.value?.current_value != null && property.value?.mortgage_balance != null) {
     return Number(property.value.current_value || 0) - Number(property.value.mortgage_balance || 0)
   }
