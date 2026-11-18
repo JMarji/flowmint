@@ -1,0 +1,312 @@
+{
+  "_comment": "How to cancel common subscriptions. Matched against Plaid merchant_name/description by whole-word alias (longest alias wins). Links and steps change over time: review entries when touched. 'via' marks billing intermediaries (app stores, PayPal) whose charges hide the real merchant.",
+  "services": [
+    {
+      "id": "apple",
+      "name": "Apple (App Store / iCloud / Apple One)",
+      "aliases": ["apple.com/bill", "apple.com bill", "apple.com", "itunes", "apple"],
+      "via": true,
+      "url": "https://apps.apple.com/account/subscriptions",
+      "steps": ["On iPhone: Settings → [your name] → Subscriptions", "Pick the subscription → Cancel Subscription"],
+      "notes": "Covers anything bought through the App Store (including apps like ChatGPT, Duolingo, Disney+ if you subscribed on iPhone)."
+    },
+    {
+      "id": "google_play",
+      "name": "Google Play",
+      "aliases": ["google play", "google *play", "google"],
+      "via": true,
+      "url": "https://play.google.com/store/account/subscriptions",
+      "steps": ["Play Store → Profile → Payments & subscriptions → Subscriptions", "Pick the subscription → Cancel subscription"],
+      "notes": "Covers subscriptions started in Android apps."
+    },
+    {
+      "id": "paypal",
+      "name": "PayPal automatic payments",
+      "aliases": ["paypal"],
+      "via": true,
+      "url": "https://www.paypal.com/myaccount/autopay/",
+      "steps": ["PayPal → Settings → Payments → Manage automatic payments", "Pick the merchant → Cancel"],
+      "notes": "The real merchant is shown in your PayPal activity. Cancelling in PayPal stops future pulls, but also cancel with the merchant so you aren't billed another way."
+    },
+    {
+      "id": "netflix",
+      "name": "Netflix",
+      "aliases": ["netflix"],
+      "url": "https://www.netflix.com/cancelplan",
+      "steps": ["Sign in → Account → Cancel membership"],
+      "notes": "You keep access until the end of the billing period."
+    },
+    {
+      "id": "spotify",
+      "name": "Spotify",
+      "aliases": ["spotify"],
+      "url": "https://www.spotify.com/account/",
+      "steps": ["Sign in on the web → Account → Manage your plan", "Change plan → Cancel Premium"],
+      "notes": "Can't be cancelled from the mobile app. If you're billed through Apple or Google, cancel there."
+    },
+    {
+      "id": "hulu",
+      "name": "Hulu",
+      "aliases": ["hulu"],
+      "url": "https://secure.hulu.com/account",
+      "steps": ["Account → Cancel (under Your Subscription)"],
+      "notes": "If billed through Disney+, Apple, Amazon, or a carrier, cancel with that company."
+    },
+    {
+      "id": "disney_plus",
+      "name": "Disney+",
+      "aliases": ["disney plus", "disneyplus", "disney+"],
+      "url": "https://www.disneyplus.com/account",
+      "steps": ["Account → Subscription → Cancel subscription"],
+      "notes": "Bundles (Disney+/Hulu/Max) are cancelled from the account that bills the bundle."
+    },
+    {
+      "id": "max",
+      "name": "Max (HBO)",
+      "aliases": ["hbo max", "max.com", "hbo"],
+      "url": "https://www.max.com/",
+      "steps": ["Profile → Settings → Subscription → Manage subscription → Cancel"],
+      "notes": "If billed through a provider (Apple, Amazon, cable), cancel there."
+    },
+    {
+      "id": "youtube",
+      "name": "YouTube Premium / YouTube TV",
+      "aliases": ["youtube premium", "youtube tv", "youtube", "google *youtube", "google youtube"],
+      "url": "https://www.youtube.com/paid_memberships",
+      "steps": ["Purchases and memberships → pick membership → Deactivate / Cancel"],
+      "notes": null
+    },
+    {
+      "id": "amazon_prime",
+      "name": "Amazon Prime",
+      "aliases": ["amazon prime", "amzn prime", "prime video", "prime membership"],
+      "url": "https://www.amazon.com/gp/primecentral",
+      "steps": ["Prime membership page → Manage membership → End membership"],
+      "notes": "Prime Video Channels and Kindle Unlimited are managed separately under Your Memberships & Subscriptions on amazon.com. Amazon may offer a partial refund if you haven't used benefits."
+    },
+    {
+      "id": "kindle_unlimited",
+      "name": "Kindle Unlimited",
+      "aliases": ["kindle unlimited", "kindle svcs", "kindle"],
+      "url": "https://www.amazon.com/yourmembershipsandsubscriptions",
+      "steps": ["Your Memberships & Subscriptions → Kindle Unlimited → Cancel"],
+      "notes": null
+    },
+    {
+      "id": "audible",
+      "name": "Audible",
+      "aliases": ["audible"],
+      "url": "https://www.audible.com/account",
+      "steps": ["Account details → Cancel membership"],
+      "notes": "Use your remaining credits first — they're lost when the membership ends."
+    },
+    {
+      "id": "paramount_plus",
+      "name": "Paramount+",
+      "aliases": ["paramount+", "paramount plus", "paramount"],
+      "url": "https://www.paramountplus.com/account/",
+      "steps": ["Account → Cancel subscription"],
+      "notes": null
+    },
+    {
+      "id": "peacock",
+      "name": "Peacock",
+      "aliases": ["peacock", "peacocktv"],
+      "url": "https://www.peacocktv.com/",
+      "steps": ["Sign in → Account → Plans & Payment → Change plan → Cancel"],
+      "notes": null
+    },
+    {
+      "id": "adobe",
+      "name": "Adobe",
+      "aliases": ["adobe"],
+      "url": "https://account.adobe.com/plans",
+      "steps": ["Plans → Manage plan → Cancel your plan"],
+      "notes": "Annual plans billed monthly can carry an early-termination fee — check the amount Adobe shows before confirming."
+    },
+    {
+      "id": "microsoft",
+      "name": "Microsoft (365 / Xbox / Game Pass)",
+      "aliases": ["microsoft 365", "office 365", "xbox game pass", "xbox", "microsoft", "msft"],
+      "url": "https://account.microsoft.com/services",
+      "steps": ["Services & subscriptions → Manage → Cancel subscription / Turn off recurring billing"],
+      "notes": null
+    },
+    {
+      "id": "google_one",
+      "name": "Google One",
+      "aliases": ["google one", "google storage"],
+      "url": "https://one.google.com/",
+      "steps": ["Settings → Cancel membership"],
+      "notes": null
+    },
+    {
+      "id": "dropbox",
+      "name": "Dropbox",
+      "aliases": ["dropbox"],
+      "url": "https://www.dropbox.com/account/plan",
+      "steps": ["Plan → Cancel plan"],
+      "notes": null
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "aliases": ["github"],
+      "url": "https://github.com/settings/billing",
+      "steps": ["Billing and plans → Downgrade / Cancel"],
+      "notes": null
+    },
+    {
+      "id": "zoom",
+      "name": "Zoom",
+      "aliases": ["zoom.us", "zoom video", "zoom"],
+      "url": "https://zoom.us/",
+      "steps": ["Sign in → Account Management → Billing → Current plans → Cancel subscription"],
+      "notes": null
+    },
+    {
+      "id": "openai",
+      "name": "ChatGPT (OpenAI)",
+      "aliases": ["openai", "chatgpt"],
+      "url": "https://chatgpt.com/",
+      "steps": ["Profile → Settings → Account → Manage subscription → Cancel plan"],
+      "notes": "If you subscribed in the iPhone or Android app, cancel through Apple or Google instead."
+    },
+    {
+      "id": "anthropic",
+      "name": "Claude (Anthropic)",
+      "aliases": ["anthropic", "claude.ai"],
+      "url": "https://claude.ai/settings/billing",
+      "steps": ["Settings → Billing → Cancel plan"],
+      "notes": "If you subscribed in the iPhone or Android app, cancel through Apple or Google instead."
+    },
+    {
+      "id": "playstation",
+      "name": "PlayStation Plus",
+      "aliases": ["playstation network", "playstation", "sony interactive", "psn"],
+      "url": "https://www.playstation.com/",
+      "steps": ["Sign in → Account Management → Subscription → Turn off auto-renew"],
+      "notes": null
+    },
+    {
+      "id": "nintendo",
+      "name": "Nintendo Switch Online",
+      "aliases": ["nintendo"],
+      "url": "https://accounts.nintendo.com/",
+      "steps": ["Nintendo eShop → Account → Subscriptions → Turn off automatic renewal"],
+      "notes": null
+    },
+    {
+      "id": "patreon",
+      "name": "Patreon",
+      "aliases": ["patreon"],
+      "url": "https://www.patreon.com/settings/memberships",
+      "steps": ["Settings → Memberships → Edit → Cancel membership"],
+      "notes": null
+    },
+    {
+      "id": "nytimes",
+      "name": "The New York Times",
+      "aliases": ["new york times", "nytimes", "ny times", "nyt"],
+      "url": "https://myaccount.nytimes.com/",
+      "steps": ["Account → Subscription overview → Cancel subscription"],
+      "notes": "Some plans route you to live chat to finish cancelling."
+    },
+    {
+      "id": "linkedin",
+      "name": "LinkedIn Premium",
+      "aliases": ["linkedin"],
+      "url": "https://www.linkedin.com/",
+      "steps": ["Me → Premium features → Manage Premium account → Cancel subscription"],
+      "notes": null
+    },
+    {
+      "id": "siriusxm",
+      "name": "SiriusXM",
+      "aliases": ["siriusxm", "sirius xm", "sirius"],
+      "url": "https://www.siriusxm.com/",
+      "steps": ["Sign in → Manage subscription", "If online cancellation isn't offered, use chat or the phone number on your account page"],
+      "notes": "Expect retention offers — decline if you just want it cancelled."
+    },
+    {
+      "id": "doordash",
+      "name": "DoorDash DashPass",
+      "aliases": ["doordash dashpass", "dashpass", "doordash"],
+      "url": "https://www.doordash.com/",
+      "steps": ["Account → DashPass → End subscription"],
+      "notes": null
+    },
+    {
+      "id": "uber_one",
+      "name": "Uber One",
+      "aliases": ["uber one"],
+      "url": null,
+      "steps": ["Uber app → Account → Uber One → Manage membership → End membership"],
+      "notes": null
+    },
+    {
+      "id": "instacart",
+      "name": "Instacart+",
+      "aliases": ["instacart+", "instacart plus", "instacart"],
+      "url": "https://www.instacart.com/",
+      "steps": ["Account → Instacart+ → Manage membership → End membership"],
+      "notes": null
+    },
+    {
+      "id": "walmart_plus",
+      "name": "Walmart+",
+      "aliases": ["walmart+", "walmart plus", "wmt plus"],
+      "url": "https://www.walmart.com/plus/account",
+      "steps": ["Walmart+ account → Cancel membership"],
+      "notes": null
+    },
+    {
+      "id": "costco",
+      "name": "Costco membership",
+      "aliases": ["costco"],
+      "url": "https://www.costco.com/",
+      "steps": ["Cancel at any warehouse membership counter, or contact Member Services"],
+      "notes": "Costco offers a membership-fee refund on cancellation — ask for it."
+    },
+    {
+      "id": "planet_fitness",
+      "name": "Planet Fitness",
+      "aliases": ["planet fitness", "planet fit", "pf club"],
+      "url": null,
+      "steps": ["Cancel in person at your home club, or by certified letter to the club", "Ask for written confirmation"],
+      "notes": "Rules vary by club and state; an annual fee may still bill. Keep the confirmation."
+    },
+    {
+      "id": "hellofresh",
+      "name": "HelloFresh",
+      "aliases": ["hellofresh", "hello fresh"],
+      "url": "https://www.hellofresh.com/",
+      "steps": ["Account settings → Plan settings → Cancel plan"],
+      "notes": "Cancel before the weekly cutoff or the next box still ships and bills."
+    },
+    {
+      "id": "duolingo",
+      "name": "Duolingo",
+      "aliases": ["duolingo"],
+      "url": "https://www.duolingo.com/",
+      "steps": ["Settings → Manage subscription → Cancel"],
+      "notes": "Usually billed through Apple or Google — cancel there if so."
+    },
+    {
+      "id": "canva",
+      "name": "Canva",
+      "aliases": ["canva"],
+      "url": "https://www.canva.com/",
+      "steps": ["Settings → Billing & plans → Cancel subscription"],
+      "notes": null
+    },
+    {
+      "id": "grammarly",
+      "name": "Grammarly",
+      "aliases": ["grammarly"],
+      "url": "https://account.grammarly.com/",
+      "steps": ["Account → Subscription → Cancel subscription"],
+      "notes": null
+    }
+  ]
+}

@@ -222,3 +222,29 @@ REFERENCES flowmint.bank_accounts(account_id) ON DELETE CASCADE;
 
 CREATE UNIQUE INDEX IF NOT EXISTS bills_credit_account_id_key
 ON flowmint.bills (credit_account_id) WHERE credit_account_id IS NOT NULL;
+
+-- Subscription cancellation tracking (user decisions on Plaid recurring streams)
+CREATE TABLE IF NOT EXISTS flowmint.subscription_tracking (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES flowmint.users(id) ON DELETE CASCADE,
+    account_id TEXT NOT NULL REFERENCES flowmint.bank_accounts(account_id) ON DELETE CASCADE,
+    stream_id TEXT NOT NULL,
+    merchant_name TEXT NOT NULL,
+    match_key TEXT NOT NULL,
+    frequency TEXT,
+    last_amount NUMERIC(12,2),
+    monthly_amount NUMERIC(12,2),
+    next_expected_date DATE,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'cancelled', 'kept')),
+    status_changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    cancelled_on DATE,
+    kept_amount NUMERIC(12,2),
+    still_charging_txn_id INTEGER REFERENCES flowmint.transactions(id) ON DELETE SET NULL,
+    still_charging_detected_at TIMESTAMPTZ,
+    alert_dismissed BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (account_id, stream_id)
+);
+
+CREATE INDEX IF NOT EXISTS subscription_tracking_user_status_idx
+ON flowmint.subscription_tracking (user_id, status);

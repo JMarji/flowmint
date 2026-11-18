@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 import db_plaid
+import db_subscriptions
 import plaid_client as pc
 from auth_routes import get_current_user
 
@@ -87,6 +88,7 @@ def exchange_public_token(body: ExchangeBody, current_user: dict = Depends(get_c
 
         # Sync liabilities for any properties already linked to accounts from this item
         _sync_liabilities_for_item(client, access_token)
+        _detect_still_charging(user_id)
 
         return {"status": "linked", "institution": institution_name}
 
@@ -114,6 +116,7 @@ def sync(current_user: dict = Depends(get_current_user)):
         except ApiException as e:
             logger.error("Sync failed for item %s: %s", item["item_id"], e)
 
+    _detect_still_charging(user_id)
     return {"synced": total_added, "items": len(items)}
 
 
@@ -252,6 +255,16 @@ def _sync_credit_liabilities(liabilities_response: dict):
             db_plaid.sync_credit_bill(account_id)
         except Exception as e:
             logger.warning("credit bill sync failed for %s: %s", account_id, e)
+
+
+def _detect_still_charging(user_id: int):
+    """After new transactions land, flag cancelled subscriptions that charged again."""
+    try:
+        flagged = db_subscriptions.detect_still_charging(user_id)
+        if flagged:
+            logger.info("Still-charging subscriptions flagged for user %s: %s", user_id, flagged)
+    except Exception as e:
+        logger.warning("still-charging detection failed for user %s: %s", user_id, e)
 
 
 def _plaid_txn_to_dict(t) -> dict:

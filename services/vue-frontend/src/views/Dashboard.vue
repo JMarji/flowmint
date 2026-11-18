@@ -48,6 +48,9 @@
       </div>
     </div>
 
+    <!-- Subscription savings + still-charging alerts (hidden until something is tracked) -->
+    <SubscriptionSavings class="mb-8" />
+
     <!-- Recent transactions + upcoming bills -->
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
       <!-- Recent transactions -->
@@ -131,6 +134,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
 import api from '@/utils/api'
+import SubscriptionSavings from '@/components/SubscriptionSavings.vue'
 import { useAuth } from '@/composables/useAuth'
 import { usePlaidSync } from '@/composables/usePlaidSync'
 
