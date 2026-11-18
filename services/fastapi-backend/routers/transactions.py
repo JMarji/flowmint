@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 import db_plaid
+import payment_detection
 from auth_routes import get_current_user
 
 router = APIRouter(tags=["transactions"])
@@ -61,6 +62,12 @@ def vendor_summary(
         search=search,
         top_n=top_n,
     )
+
+
+@router.post("/transactions/detect-payments")
+def detect_payments(current_user: dict = Depends(get_current_user)):
+    """Scan transactions for mortgage, auto-loan, and bill payments (also runs after every sync)."""
+    return payment_detection.run_all(current_user["id"])
 
 
 @router.patch("/transactions/{txn_id}/category")

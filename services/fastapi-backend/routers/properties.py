@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional
 from datetime import date
 from functools import lru_cache
@@ -15,6 +15,7 @@ import re
 import db_plaid
 import plaid_client as pc
 from routers.plaid import fetch_mortgage_liability
+import mortgage_status
 
 router = APIRouter(tags=["properties"])
 
@@ -49,6 +50,8 @@ class PropertyCreate(BaseModel):
 
 class PropertyUpdate(PropertyCreate):
     address: Optional[str] = None
+    # Day of month the mortgage is due; 0 clears it (falls back to the 1st).
+    mortgage_due_day: Optional[int] = Field(None, ge=0, le=31)
 
 
 class AddressEnrichBody(BaseModel):
@@ -170,7 +173,7 @@ def list_properties(current_user: dict = Depends(get_current_user)):
                 (current_user["id"],)
             )
             rows = cur.fetchall()
-    return [_row_to_property(r) for r in rows]
+    return mortgage_status.attach(current_user["id"], [_row_to_property(r) for r in rows])
 
 
 @router.post("/properties", status_code=201)
@@ -519,7 +522,8 @@ def enrich_address_preview(body: AddressEnrichBody, current_user: dict = Depends
     return _enrich_property_address(body.address, body.city, body.state, body.zip)
 
 
-@router.get("/properties/{property_id}")
+# ":int" so literal paths like /properties/mortgage-accounts (declared later) still match their own routes.
+@router.get("/properties/{property_id:int}")
 def get_property(property_id: int, current_user: dict = Depends(get_current_user)):
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
@@ -530,7 +534,7 @@ def get_property(property_id: int, current_user: dict = Depends(get_current_user
             row = cur.fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Property not found")
-    return _row_to_property(row)
+    return mortgage_status.attach(current_user["id"], [_row_to_property(row)])[0]
 
 
 @router.post("/properties/{property_id}/enrich-address")
@@ -579,6 +583,8 @@ def enrich_property_from_address(
 @router.put("/properties/{property_id}")
 def update_property(property_id: int, body: PropertyUpdate, current_user: dict = Depends(get_current_user)):
     updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    if updates.get("mortgage_due_day") == 0:
+        updates["mortgage_due_day"] = None
     if not updates:
         raise HTTPException(status_code=422, detail="No fields to update")
     cols = ", ".join(f"{k} = %s" for k in updates)

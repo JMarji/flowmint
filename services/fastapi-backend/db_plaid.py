@@ -465,7 +465,8 @@ def get_transactions_for_user(
                       ba.name AS account_name, bi.institution_name,
                                             CASE WHEN {effective_category_sql} = 'MORTGAGE_PAYMENT' THEN TRUE ELSE FALSE END AS is_mortgage_payment,
                                             t.mortgage_property_id,
-                                            lp.address AS mortgage_property_address
+                                            lp.address AS mortgage_property_address,
+                       t.tag_source
                 FROM flowmint.transactions t
                 JOIN flowmint.bank_accounts ba ON t.account_id = ba.id
                 JOIN flowmint.bank_items bi ON ba.item_id = bi.id
@@ -501,6 +502,7 @@ def get_transactions_for_user(
             "is_mortgage_payment": bool(r[15]),
             "mortgage_property_id": r[16],
             "mortgage_property_address": r[17],
+            "tag_source": r[18],
         }
         for r in rows
     ]
@@ -618,12 +620,15 @@ def override_transaction_category(txn_id: int, user_id: int, category: str) -> b
             cur.execute(
                 """
                 UPDATE flowmint.transactions t
-                SET category_override = %s
+                SET category_override = %s,
+                    tag_source = 'manual',
+                    -- a payment that's no longer a mortgage payment can't stay linked to a property
+                    mortgage_property_id = CASE WHEN %s = 'MORTGAGE_PAYMENT' THEN t.mortgage_property_id END
                 FROM flowmint.bank_accounts ba
                 JOIN flowmint.bank_items bi ON ba.item_id = bi.id
                 WHERE t.id = %s AND t.account_id = ba.id AND bi.user_id = %s
                 """,
-                (category, txn_id, user_id)
+                (category, category, txn_id, user_id)
             )
             affected = cur.rowcount
             conn.commit()
@@ -656,7 +661,7 @@ def override_transaction_mortgage_property(txn_id: int, user_id: int, property_i
             cur.execute(
                 f"""
                 UPDATE flowmint.transactions t
-                SET mortgage_property_id = %s
+                SET mortgage_property_id = %s, tag_source = 'manual'
                 FROM flowmint.bank_accounts ba
                 JOIN flowmint.bank_items bi ON ba.item_id = bi.id
                 LEFT JOIN flowmint.properties p

@@ -34,6 +34,22 @@
           <span class="text-[10px] px-2 py-1 rounded" style="background: rgba(251,146,60,0.16); color: #fb923c">Mortgage payments</span>
           <span class="text-[10px] px-2 py-1 rounded" style="background: rgba(96,165,250,0.16); color: #60a5fa">Auto loan payments</span>
           <span class="text-[10px] px-2 py-1 rounded" style="background: rgba(148,163,184,0.18); color: #94a3b8">Manual plotted days</span>
+          <button
+            type="button"
+            class="text-[10px] px-2 py-1 rounded border transition"
+            :style="showSubscriptions ? 'background: rgba(192,132,252,0.16); color: #c084fc; border-color: transparent' : 'background: transparent; color: var(--text-muted); border-color: var(--border); text-decoration: line-through'"
+            :aria-pressed="showSubscriptions"
+            title="Show or hide subscriptions detected by Plaid"
+            @click="toggleLayer('subscriptions')"
+          >Subscriptions</button>
+          <button
+            type="button"
+            class="text-[10px] px-2 py-1 rounded border transition"
+            :style="showOtherRecurring ? 'background: rgba(250,204,21,0.14); color: #facc15; border-color: transparent' : 'background: transparent; color: var(--text-muted); border-color: var(--border); text-decoration: line-through'"
+            :aria-pressed="showOtherRecurring"
+            title="Rent, loan payments, and transfers Plaid detected as recurring (may overlap your bills)"
+            @click="toggleLayer('other')"
+          >Other recurring</button>
         </div>
 
         <div class="grid grid-cols-7 gap-1 mb-1">
@@ -58,9 +74,9 @@
                 :key="event.id"
                 class="text-[10px] px-1.5 py-1 rounded truncate"
                 :style="eventChipStyle(event)"
-                :title="`${event.name} · $${fmt(event.amount)}`"
+                :title="`${event.name} · $${fmt(event.amount)}${event.payment ? ' · paid' : ''}`"
               >
-                {{ event.name }} · ${{ fmt(event.amount) }}
+                <i v-if="event.payment" class="pi pi-check text-[8px] mr-0.5"></i>{{ event.name }} · ${{ fmt(event.amount) }}
               </div>
               <p v-if="cell.events.length > 3" class="text-[10px]" style="color: var(--text-muted)">+{{ cell.events.length - 3 }} more</p>
             </div>
@@ -86,6 +102,28 @@
           <div v-for="event in selectedEvents" :key="event.id" class="rounded-lg border p-2.5" style="border-color: var(--border); background: var(--surface-2)">
             <p class="text-xs font-medium" style="color: var(--text)">{{ event.name }}</p>
             <p class="text-[11px]" style="color: var(--text-muted)">${{ fmt(event.amount) }} · {{ eventTypeLabel(event) }}</p>
+            <p v-if="event.type === 'recurring'" class="text-[11px] mt-1 flex items-center justify-between gap-2" style="color: var(--text-muted)">
+              <span class="truncate">{{ event.accountLabel }}<span v-if="!event.confirmed"> · expected</span></span>
+              <RouterLink to="/subscriptions" class="hover:underline flex-shrink-0" style="color: var(--mint)">Manage →</RouterLink>
+            </p>
+            <div v-if="event.type === 'bill' && event.payment" class="mt-1.5 rounded-md px-2 py-1.5 text-[11px]" style="background: var(--mint-dim)">
+              <p style="color: var(--mint)">
+                <i class="pi pi-check-circle text-[10px]"></i>
+                Paid {{ shortDate(event.payment.date) }} · ${{ fmt(event.payment.amount) }}
+              </p>
+              <p class="truncate" style="color: var(--text-muted)" :title="event.payment.name">
+                {{ event.payment.name }}{{ event.payment.source === 'auto' ? ' · found automatically' : '' }}
+              </p>
+              <button
+                v-if="event.payment.source === 'auto'"
+                class="hover:underline mt-0.5"
+                style="color: var(--text-muted)"
+                @click="rejectPayment(event.bill, event.payment)"
+              >Not this payment</button>
+            </div>
+            <p v-else-if="event.type === 'bill' && event.date < todayIso" class="mt-1 text-[11px]" style="color: #fbbf24">
+              No matching payment found
+            </p>
             <div class="flex gap-1 mt-2">
               <Button
                 v-if="event.type === 'bill'"
@@ -223,9 +261,11 @@ import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import api from '@/utils/api'
+import { projectDates } from '@/utils/recurrence'
 
 const WEEK_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 const PLOT_STORAGE_KEY = 'flowmint-bill-plots-v1'
+const LAYER_STORAGE_KEY = 'flowmint-bills-recurring-layers-v1'
 
 const bills = ref([])
 const loading = ref(true)
@@ -239,6 +279,9 @@ const savingPlot = ref(false)
 const plottedEvents = ref([])
 const loanPaymentEvents = ref([])
 const loanPaymentsLoading = ref(false)
+const recurringStreams = ref([])
+const showSubscriptions = ref(true)
+const showOtherRecurring = ref(false)
 const plotForm = ref({ date: toIsoDate(new Date()), bill_id: '', name: '', amount: '' })
 
 const totalMonthly = computed(() => bills.value.filter(b => b.is_active).reduce((s, b) => s + b.amount, 0))
@@ -262,12 +305,19 @@ const recurringEvents = computed(() => {
     .map((bill) => {
       const day = Math.min(Math.max(Number(bill.due_day_of_month) || 1, 1), lastDay)
       const date = new Date(year, month, day)
+      const period = `${year}-${String(month + 1).padStart(2, '0')}`
       return {
         id: `bill-${bill.id}-${toIsoDate(date)}`,
         type: 'bill',
         date: toIsoDate(date),
         name: bill.name,
         amount: Number(bill.amount) || 0,
+        // Payment for this month's due date: matched from transactions, else the bill's last-paid date
+        // if it falls in this month (set by "Mark paid", or by Plaid for credit-card bills).
+        payment: (bill.payments || []).find(p => p.period === period)
+          || (bill.last_paid_date?.startsWith(period)
+            ? { date: bill.last_paid_date, amount: Number(bill.amount) || 0, name: bill.credit_account_db_id ? 'Reported by your card issuer' : 'Marked paid', source: 'manual' }
+            : null),
         bill,
       }
     })
@@ -282,9 +332,61 @@ const plottedEventsForMonth = computed(() => {
   })
 })
 
+// Plaid-detected recurring charges projected onto the viewed month.
+const recurringChargeEvents = computed(() => {
+  const { start, end } = monthRange()
+  const todayIso = toIsoDate(new Date())
+  const events = []
+  for (const s of recurringStreams.value) {
+    if (s.kind === 'subscription' ? !showSubscriptions.value : !showOtherRecurring.value) continue
+    const account = s.account ? `${s.account.name}${s.account.mask ? ' ••' + s.account.mask : ''}` : ''
+    for (const date of projectDates(s, start, end)) {
+      events.push({
+        id: `rec-${s.account_id}-${s.stream_id}-${date}`,
+        type: 'recurring',
+        kind: s.kind,
+        date,
+        name: s.name,
+        amount: Number(s.last_amount) || 0,
+        accountLabel: account,
+        // Past dates up to the last seen charge actually happened; everything else is a projection.
+        confirmed: !!s.last_date && date <= s.last_date && date <= todayIso,
+      })
+    }
+  }
+  return events
+})
+
+const toggleLayer = (layer) => {
+  if (layer === 'subscriptions') showSubscriptions.value = !showSubscriptions.value
+  else showOtherRecurring.value = !showOtherRecurring.value
+  try {
+    window.localStorage.setItem(LAYER_STORAGE_KEY, JSON.stringify({ subs: showSubscriptions.value, other: showOtherRecurring.value }))
+  } catch {}
+}
+
+const loadLayerPrefs = () => {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(LAYER_STORAGE_KEY) || 'null')
+    if (saved) {
+      showSubscriptions.value = saved.subs !== false
+      showOtherRecurring.value = saved.other === true
+    }
+  } catch {}
+}
+
+const loadRecurringStreams = async () => {
+  try {
+    const res = await api.get('/api/subscriptions/recurring')
+    recurringStreams.value = res.data?.streams || []
+  } catch {
+    recurringStreams.value = []
+  }
+}
+
 const eventsByDate = computed(() => {
   const map = {}
-  for (const event of [...recurringEvents.value, ...loanPaymentEvents.value, ...plottedEventsForMonth.value]) {
+  for (const event of [...recurringEvents.value, ...loanPaymentEvents.value, ...recurringChargeEvents.value, ...plottedEventsForMonth.value]) {
     if (!map[event.date]) map[event.date] = []
     map[event.date].push(event)
   }
@@ -292,7 +394,8 @@ const eventsByDate = computed(() => {
   const priority = {
     bill: 0,
     loan_txn: 1,
-    plot: 2,
+    recurring: 2,
+    plot: 3,
   }
 
   for (const key of Object.keys(map)) {
@@ -337,6 +440,13 @@ const eventChipStyle = (event) => {
   if (event.type === 'bill') return 'background: rgba(61,219,184,0.16); color: var(--mint)'
   if (event.type === 'loan_txn' && event.loanKind === 'mortgage') return 'background: rgba(251,146,60,0.16); color: #fb923c'
   if (event.type === 'loan_txn' && event.loanKind === 'auto') return 'background: rgba(96,165,250,0.16); color: #60a5fa'
+  if (event.type === 'recurring') {
+    const base = event.kind === 'subscription'
+      ? 'background: rgba(192,132,252,0.16); color: #c084fc'
+      : 'background: rgba(250,204,21,0.14); color: #facc15'
+    // Projected (not yet seen) charges get a dashed outline.
+    return event.confirmed ? base : `${base}; outline: 1px dashed currentColor; outline-offset: -1px`
+  }
   return 'background: rgba(148,163,184,0.18); color: #94a3b8'
 }
 
@@ -344,6 +454,7 @@ const eventTypeLabel = (event) => {
   if (event.type === 'bill') return 'Recurring bill'
   if (event.type === 'loan_txn' && event.loanKind === 'mortgage') return 'Tagged mortgage payment'
   if (event.type === 'loan_txn' && event.loanKind === 'auto') return 'Tagged auto loan payment'
+  if (event.type === 'recurring') return event.kind === 'subscription' ? 'Subscription' : 'Recurring charge'
   return 'Plotted day'
 }
 
@@ -550,8 +661,19 @@ watch(viewMonth, () => {
   loadLoanPaymentEvents()
 })
 
+const todayIso = toIsoDate(new Date())
+const shortDate = (d) => new Date(`${d}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+
+const rejectPayment = async (bill, payment) => {
+  await api.delete(`/api/bills/${bill.id}/payments/${payment.id}`)
+  await load()
+}
+
 onMounted(async () => {
   loadPlottedEvents()
-  await Promise.all([load(), loadLoanPaymentEvents()])
+  loadLayerPrefs()
+  // Match bill/loan payments in recent transactions before drawing the calendar (also runs on every sync).
+  try { await api.post('/api/transactions/detect-payments') } catch {}
+  await Promise.all([load(), loadLoanPaymentEvents(), loadRecurringStreams()])
 })
 </script>

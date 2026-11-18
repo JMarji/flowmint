@@ -170,6 +170,76 @@
       </div>
     </div>
 
+    <!-- Mortgage payment status -->
+    <div
+      v-if="mortgageStatus && mortgageStatus.status !== 'none'"
+      class="rounded-xl border p-4 mb-8"
+      :style="{ background: 'var(--surface)', borderColor: mortgageStatus.status === 'behind' ? '#f87171' : 'var(--border)' }"
+    >
+      <div class="flex flex-col md:flex-row md:items-start gap-4">
+        <div class="flex items-start gap-3 flex-1 min-w-0">
+          <div class="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" :style="{ background: msStyle.bg }">
+            <i :class="`pi ${msStyle.icon} text-lg`" :style="{ color: msStyle.color }"></i>
+          </div>
+          <div class="min-w-0">
+            <p class="text-xs" style="color: var(--text-muted)">Mortgage payment status</p>
+            <p class="text-lg font-bold" :style="{ color: msStyle.color }">{{ mortgageStatus.label }}</p>
+            <p v-if="mortgageStatus.message" class="text-xs mt-0.5" style="color: var(--text)">{{ mortgageStatus.message }}</p>
+            <p class="text-[11px] mt-1" style="color: var(--text-muted)">{{ mortgageSourceLabel(mortgageStatus.source) }}</p>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-3 md:w-auto">
+          <div>
+            <p class="text-[10px] uppercase tracking-wide" style="color: var(--text-muted)">{{ mortgageStatus.status === 'paid' ? 'Next due' : 'Due' }}</p>
+            <p class="text-sm font-semibold" style="color: var(--text)">{{ shortDate(mortgageStatus.status === 'paid' ? mortgageStatus.next_due_date : (mortgageStatus.due_date || mortgageStatus.next_due_date)) || '—' }}</p>
+          </div>
+          <div>
+            <p class="text-[10px] uppercase tracking-wide" style="color: var(--text-muted)">Last payment</p>
+            <p class="text-sm font-semibold" style="color: var(--text)">{{ mortgageStatus.last_payment_amount != null ? '$' + fmt(mortgageStatus.last_payment_amount) : '—' }}</p>
+            <p v-if="mortgageStatus.last_payment_date" class="text-[10px]" style="color: var(--text-muted)">{{ shortDate(mortgageStatus.last_payment_date) }}</p>
+          </div>
+          <div>
+            <p class="text-[10px] uppercase tracking-wide" style="color: var(--text-muted)">Past due</p>
+            <p class="text-sm font-semibold" :style="{ color: mortgageStatus.past_due_amount ? '#f87171' : 'var(--text)' }">
+              {{ mortgageStatus.past_due_amount ? '$' + fmt(mortgageStatus.past_due_amount) : '$0' }}
+            </p>
+            <p v-if="mortgageStatus.late_fee" class="text-[10px]" style="color: #f87171">+ ${{ fmt(mortgageStatus.late_fee) }} late fee</p>
+          </div>
+          <div>
+            <p class="text-[10px] uppercase tracking-wide" style="color: var(--text-muted)">Due day</p>
+            <select
+              v-if="mortgageStatus.source !== 'plaid'"
+              :value="property.mortgage_due_day || 0"
+              @change="saveDueDay(Number($event.target.value))"
+              :disabled="savingDueDay"
+              class="px-1.5 py-0.5 rounded text-sm"
+              style="background: var(--surface-2); border: 1px solid var(--border); color: var(--text)"
+              aria-label="Mortgage due day of month"
+            >
+              <option :value="0">1st (default)</option>
+              <option v-for="d in 31" :key="d" :value="d">{{ ordinal(d) }}</option>
+            </select>
+            <p v-else class="text-sm font-semibold" style="color: var(--text)">{{ ordinal(mortgageStatus.due_day) }}</p>
+            <p class="text-[10px]" style="color: var(--text-muted)">{{ mortgageStatus.grace_days }}-day grace</p>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="mortgageStatus.recent_payments?.length" class="mt-4 pt-3 border-t" style="border-color: var(--border)">
+        <p class="text-[11px] mb-2" style="color: var(--text-muted)">Recent payments</p>
+        <div class="flex flex-wrap gap-2">
+          <span
+            v-for="p in mortgageStatus.recent_payments"
+            :key="p.date + p.source + p.amount"
+            class="text-[11px] px-2 py-1 rounded"
+            style="background: var(--surface-2); color: var(--text)"
+            :title="paymentSourceLabel(p.source)"
+          >{{ shortDate(p.date) }} · ${{ fmt(p.amount) }}</span>
+        </div>
+      </div>
+    </div>
+
     <!-- Debt + Equity trend -->
     <div class="rounded-xl border p-4 mb-8" style="background: var(--surface); border-color: var(--border)">
       <div class="flex items-center justify-between mb-3">
@@ -694,6 +764,7 @@ import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Textarea from 'primevue/textarea'
 import api from '@/utils/api'
+import { mortgageStatusStyle, mortgageSourceLabel } from '@/utils/mortgageStatus'
 import { Line } from 'vue-chartjs'
 import {
   Chart as ChartJS,
@@ -1578,6 +1649,32 @@ const loadProperty = async () => {
   const res = await api.get(`/api/properties/${propertyId}`)
   property.value = res.data
 }
+
+// Mortgage payment status (paid / due / behind) computed by the API.
+const mortgageStatus = computed(() => property.value?.mortgage_status || null)
+const msStyle = computed(() => mortgageStatusStyle(mortgageStatus.value?.status))
+const savingDueDay = ref(false)
+const saveDueDay = async (day) => {
+  savingDueDay.value = true
+  try {
+    const res = await api.put(`/api/properties/${propertyId}`, { mortgage_due_day: day })
+    property.value = res.data
+  } finally {
+    savingDueDay.value = false
+  }
+}
+const shortDate = (d) => (d ? new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '')
+const ordinal = (n) => {
+  const s = ['th', 'st', 'nd', 'rd']
+  const v = n % 100
+  return n + (s[(v - 20) % 10] || s[v] || s[0])
+}
+const paymentSourceLabel = (src) => ({
+  tagged: 'Bank transaction tagged to this property',
+  detected: 'Bank transaction found automatically',
+  mortgage_account: 'Payment on the linked mortgage account',
+  imported: 'Imported payment history',
+}[src] || '')
 
 const loadAnalytics = async () => {
   loadingAnalytics.value = true

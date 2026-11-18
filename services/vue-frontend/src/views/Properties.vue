@@ -1,6 +1,6 @@
 <template>
   <div class="p-6 max-w-5xl mx-auto">
-    <div class="flex items-center justify-between mb-8">
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-8">
       <div>
         <h1 class="text-2xl font-bold" style="color: var(--text)">Properties</h1>
         <p class="text-sm mt-1" style="color: var(--text-muted)">Real estate portfolio · ${{ fmt(totalEquity) }} total equity</p>
@@ -25,6 +25,36 @@
       <div class="rounded-xl border p-4 text-center" style="background: var(--surface); border-color: var(--border)">
         <p class="text-xs mb-1" style="color: var(--text-muted)">Total Mortgage</p>
         <p class="text-lg font-bold" style="color: var(--text)">${{ fmt(totalMortgage) }}</p>
+      </div>
+    </div>
+
+    <!-- Detected mortgage payments that couldn't be matched to a property -->
+    <RouterLink
+      v-if="unassignedMortgagePayments"
+      :to="{ path: '/transactions', query: { category: 'MORTGAGE_PAYMENT' } }"
+      class="rounded-xl border p-3 mb-4 flex items-center gap-3 text-xs hover:opacity-90"
+      style="border-color: #fbbf24; background: rgba(251,191,36,0.08); color: var(--text)"
+    >
+      <i class="pi pi-link" style="color: #fbbf24"></i>
+      <span class="flex-1">
+        {{ unassignedMortgagePayments }} mortgage payment{{ unassignedMortgagePayments === 1 ? '' : 's' }}
+        couldn't be matched to a property automatically. Link {{ unassignedMortgagePayments === 1 ? 'it' : 'one per lender' }}
+        and future payments from that lender will follow.
+      </span>
+      <span style="color: #fbbf24">Review →</span>
+    </RouterLink>
+
+    <!-- Behind on a mortgage -->
+    <div v-if="behindProps.length" class="rounded-xl border p-4 mb-6 flex items-start gap-3" style="border-color: #f87171; background: rgba(248,113,113,0.08)">
+      <i class="pi pi-exclamation-triangle mt-0.5" style="color: #f87171"></i>
+      <div class="min-w-0">
+        <p class="text-sm font-semibold" style="color: #f87171">
+          {{ behindProps.length === 1 ? 'A mortgage is behind' : `${behindProps.length} mortgages are behind` }}
+        </p>
+        <p v-for="p in behindProps" :key="p.id" class="text-xs mt-0.5" style="color: var(--text)">
+          <RouterLink :to="`/properties/${p.id}`" class="font-medium hover:underline">{{ p.address }}</RouterLink>
+          — {{ p.mortgage_status.message }}
+        </p>
       </div>
     </div>
 
@@ -53,7 +83,17 @@
             <i class="pi pi-trash text-xs"></i>
           </button>
         </div>
-        <p class="text-xs mb-4" style="color: var(--text-muted)">{{ [p.city, p.state].filter(Boolean).join(', ') }}</p>
+        <p class="text-xs mb-3" style="color: var(--text-muted)">{{ [p.city, p.state].filter(Boolean).join(', ') }}</p>
+        <div
+          v-if="p.mortgage_status && p.mortgage_status.status !== 'none'"
+          class="flex items-center gap-2 rounded-lg px-2.5 py-1.5 mb-4 text-xs"
+          :style="{ background: mortgageStatusStyle(p.mortgage_status.status).bg }"
+          :title="p.mortgage_status.message || ''"
+        >
+          <i :class="`pi ${mortgageStatusStyle(p.mortgage_status.status).icon}`" :style="{ color: mortgageStatusStyle(p.mortgage_status.status).color }"></i>
+          <span class="font-semibold flex-shrink-0" :style="{ color: mortgageStatusStyle(p.mortgage_status.status).color }">Mortgage {{ p.mortgage_status.label.toLowerCase() }}</span>
+          <span class="truncate" style="color: var(--text-muted)">{{ statusDetail(p.mortgage_status) }}</span>
+        </div>
         <div class="grid grid-cols-2 gap-3">
           <div>
             <p class="text-xs" style="color: var(--text-muted)">Current Value</p>
@@ -153,6 +193,7 @@ import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import api from '@/utils/api'
+import { mortgageStatusStyle } from '@/utils/mortgageStatus'
 
 const properties = ref([])
 const loading = ref(true)
@@ -167,12 +208,37 @@ const form = ref({ address: '', city: '', state: '', zip: '', purchase_price: ''
 const totalValue = computed(() => properties.value.reduce((s, p) => s + (p.current_value || 0), 0))
 const totalMortgage = computed(() => properties.value.reduce((s, p) => s + (p.mortgage_balance || 0), 0))
 const totalEquity = computed(() => totalValue.value - totalMortgage.value)
+const behindProps = computed(() => properties.value.filter(p => p.mortgage_status?.status === 'behind'))
+
+const shortDate = (d) => (d ? new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '')
+const statusDetail = (ms) => {
+  if (ms.status === 'behind') {
+    if (ms.past_due_amount) return `· $${fmt(ms.past_due_amount)} past due`
+    return ms.days_late ? `· ${ms.days_late} days late` : ''
+  }
+  if (ms.status === 'paid') return ms.next_due_date ? `· next due ${shortDate(ms.next_due_date)}` : ''
+  if (ms.status === 'due') return (ms.due_date || ms.next_due_date) ? `· due ${shortDate(ms.due_date || ms.next_due_date)}` : ''
+  if (ms.status === 'unknown') return '· tag payments to track'
+  return ''
+}
+
 const fmt = (v) => v != null ? Number(v).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) : '—'
+
+const unassignedMortgagePayments = ref(0)
 
 const load = async () => {
   loading.value = true
   try { const res = await api.get('/api/properties'); properties.value = res.data }
   finally { loading.value = false }
+}
+
+// Find mortgage payments in transactions first (also runs on every sync) so statuses are current.
+const detectThenLoad = async () => {
+  try {
+    const res = await api.post('/api/transactions/detect-payments')
+    unassignedMortgagePayments.value = res.data?.unassigned_mortgage_payments || 0
+  } catch {}
+  await load()
 }
 
 const numOrNull = (v) => v !== '' && v != null ? Number(v) : null
@@ -260,5 +326,5 @@ const deleteProperty = async (id) => {
   properties.value = properties.value.filter(p => p.id !== id)
 }
 
-onMounted(load)
+onMounted(detectThenLoad)
 </script>

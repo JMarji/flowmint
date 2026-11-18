@@ -28,6 +28,7 @@ const router = createRouter({
         { path: 'transactions', name: 'transactions', component: () => import('@/views/Transactions.vue') },
         { path: 'budget', name: 'budget', component: () => import('@/views/Budget.vue') },
         { path: 'bills', name: 'bills', component: () => import('@/views/Bills.vue') },
+        { path: 'subscriptions', name: 'subscriptions', component: () => import('@/views/Subscriptions.vue') },
         { path: 'properties', name: 'properties', component: () => import('@/views/Properties.vue') },
         { path: 'properties/:id', name: 'property-detail', component: () => import('@/views/PropertyDetail.vue') },
         { path: 'documents', name: 'documents', component: () => import('@/views/Documents.vue') },

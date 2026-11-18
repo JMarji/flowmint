@@ -5,16 +5,15 @@ from typing import Dict, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-import cancel_directory
 import db_plaid
 import db_subscriptions
 import plaid_client as pc
+import recurring
 from database import get_pool
 from auth_routes import get_current_user
 
 from plaid.model.liabilities_get_request import LiabilitiesGetRequest
 from plaid.model.liabilities_get_request_options import LiabilitiesGetRequestOptions
-from plaid.model.transactions_recurring_get_request import TransactionsRecurringGetRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["accounts"])
@@ -256,118 +255,25 @@ def update_credit_settings(
     return {"settings": settings, "bill_id": bill_id}
 
 
-_PER_MONTH = {
-    "WEEKLY": 52 / 12, "BIWEEKLY": 26 / 12, "SEMI_MONTHLY": 2.0,
-    "MONTHLY": 1.0, "ANNUALLY": 1 / 12,
-}
-
-
-def _fetch_recurring_streams(access_token: str, account_plaid_id: str):
-    """Active outflow streams from Plaid for one account, or None if unavailable."""
-    try:
-        res = pc.get_plaid_client().transactions_recurring_get(
-            TransactionsRecurringGetRequest(access_token=access_token, account_ids=[account_plaid_id])
-        ).to_dict()
-    except Exception as e:  # product not enabled, Plaid outage, etc.
-        logger.warning("transactions_recurring_get failed for account %s: %s", account_plaid_id, e)
-        return None
-
-    streams = []
-    for st in res.get("outflow_streams") or []:
-        if not st.get("is_active", True):
-            continue
-        freq = _enum_str(st.get("frequency")) or "UNKNOWN"
-        avg = abs(float((st.get("average_amount") or {}).get("amount") or 0))
-        last = abs(float((st.get("last_amount") or {}).get("amount") or 0))
-        pfc = st.get("personal_finance_category") or {}
-        streams.append({
-            "stream_id": st.get("stream_id"),
-            "name": st.get("merchant_name") or st.get("description") or "Unknown",
-            "description": st.get("description"),
-            "frequency": freq,
-            "average_amount": avg,
-            "last_amount": last,
-            "last_date": _iso_date(st.get("last_date")),
-            "next_date": _iso_date(st.get("predicted_next_date")),
-            "status": _enum_str(st.get("status")) or "",
-            "category": pfc.get("primary"),
-            "monthly_equivalent": round(last * _PER_MONTH.get(freq, 0), 2),
-        })
-    return streams
-
-
-def _price_increase(stream: dict, tracking: Optional[dict]) -> Optional[float]:
-    """For subscriptions the user chose to keep: how much the price rose since then (if noticeably)."""
-    if not tracking or tracking["status"] != "kept" or not tracking["kept_amount"]:
-        return None
-    diff = stream["last_amount"] - tracking["kept_amount"]
-    return round(diff, 2) if diff >= max(0.5, tracking["kept_amount"] * 0.02) else None
-
-
 @router.get("/accounts/{account_db_id}/credit/recurring")
 def credit_recurring_charges(account_db_id: int, current_user: dict = Depends(get_current_user)):
-    """Recurring charges on this card (Plaid /transactions/recurring/get) merged with the user's
-    cancel/keep decisions, how-to-cancel info, and price-increase flags."""
+    """Recurring charges on this card merged with the user's cancel/keep decisions,
+    how-to-cancel info, and price-increase flags."""
     acct = _get_credit_account(current_user["id"], account_db_id)
     plaid_id = acct["account_id"]
-    streams = _fetch_recurring_streams(acct["access_token"], plaid_id)
+    streams = recurring.fetch_streams(acct["access_token"], [plaid_id])
+    if streams is not None:
+        streams = [st for st in streams if st["account_id"] == plaid_id]
 
     if streams:
         db_subscriptions.refresh_from_streams(plaid_id, streams)
     db_subscriptions.detect_still_charging(current_user["id"])
-    tracked = db_subscriptions.by_stream_for_account(plaid_id)
-
-    active, cancelled = [], []
-    seen = set()
-    for st in streams or []:
-        t = tracked.get(st["stream_id"])
-        seen.add(st["stream_id"])
-        item = {
-            **st,
-            "tracking": t,
-            "cancel_info": cancel_directory.lookup(st["name"], st["description"]),
-            "price_increase": _price_increase(st, t),
-        }
-        (cancelled if t and t["status"] == "cancelled" else active).append(item)
-
-    # Cancelled subscriptions Plaid no longer reports (stream went inactive) still belong in the list.
-    for stream_id, t in tracked.items():
-        if stream_id in seen or t["status"] != "cancelled":
-            continue
-        cancelled.append({
-            "stream_id": stream_id,
-            "name": t["merchant_name"],
-            "description": None,
-            "frequency": t["frequency"] or "UNKNOWN",
-            "average_amount": t["last_amount"],
-            "last_amount": t["last_amount"],
-            "last_date": None,
-            "next_date": None,
-            "status": "",
-            "category": None,
-            "monthly_equivalent": t["monthly_amount"] or 0.0,
-            "tracking": t,
-            "cancel_info": cancel_directory.lookup(t["merchant_name"]),
-            "price_increase": None,
-        })
-
-    active.sort(key=lambda x: x["monthly_equivalent"], reverse=True)
-    cancelled.sort(key=lambda x: (x["tracking"]["still_charging"] is None, -(x["monthly_equivalent"] or 0)))
+    tracked = {(plaid_id, k): v for k, v in db_subscriptions.by_stream_for_account(plaid_id).items()}
+    active, cancelled = recurring.merge(streams or [], tracked)
     return {
         "available": streams is not None,
         "streams": active,
         "cancelled": cancelled,
         "monthly_total": round(sum(x["monthly_equivalent"] for x in active), 2),
-        "monthly_saved": round(
-            sum(x["monthly_equivalent"] or 0 for x in cancelled if not x["tracking"]["still_charging"]), 2
-        ),
+        "monthly_saved": recurring.saved_per_month(cancelled),
     }
-
-
-def _enum_str(v):
-    v = getattr(v, "value", v)
-    return str(v) if v is not None else None
-
-
-def _iso_date(v):
-    return v.isoformat() if isinstance(v, date) else v

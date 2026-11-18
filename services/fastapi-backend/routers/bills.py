@@ -73,7 +73,26 @@ def list_bills(current_user: dict = Depends(get_current_user)):
                 (current_user["id"],)
             )
             rows = cur.fetchall()
-    return [_row_to_bill(r) for r in rows]
+            cur.execute(
+                """SELECT bp.id, bp.bill_id, bp.period, bp.source, t.id, t.date, t.amount,
+                          COALESCE(t.merchant_name, t.name)
+                   FROM flowmint.bill_payments bp
+                   JOIN flowmint.bills b ON b.id = bp.bill_id
+                   JOIN flowmint.transactions t ON t.id = bp.transaction_id
+                   WHERE b.user_id = %s AND bp.status = 'matched' AND t.date >= %s
+                   ORDER BY t.date DESC""",
+                (current_user["id"], date.today() - timedelta(days=400))
+            )
+            payments: dict = {}
+            for pid, bill_id, period, source, txn_id, d, amount, name in cur.fetchall():
+                payments.setdefault(bill_id, []).append({
+                    "id": pid, "period": period, "source": source, "transaction_id": txn_id,
+                    "date": d.isoformat(), "amount": float(amount), "name": name,
+                })
+    bills = [_row_to_bill(r) for r in rows]
+    for b in bills:
+        b["payments"] = payments.get(b["id"], [])
+    return bills
 
 
 @router.post("/bills", status_code=201)
@@ -128,6 +147,35 @@ def mark_paid(bill_id: int, body: MarkPaidBody, current_user: dict = Depends(get
                 raise HTTPException(status_code=404, detail="Bill not found")
             conn.commit()
     return {"bill_id": bill_id, "paid_date": paid_date}
+
+
+@router.delete("/bills/{bill_id}/payments/{payment_id}", status_code=204)
+def reject_bill_payment(bill_id: int, payment_id: int, current_user: dict = Depends(get_current_user)):
+    """'That transaction wasn't this bill' — unlink it and never auto-match that pair again."""
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE flowmint.bill_payments bp SET status = 'rejected'
+                   FROM flowmint.bills b
+                   WHERE bp.id = %s AND bp.bill_id = %s AND b.id = bp.bill_id AND b.user_id = %s
+                     AND bp.status = 'matched'
+                   RETURNING bp.transaction_id""",
+                (payment_id, bill_id, current_user["id"])
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Payment not found")
+            # If last_paid_date came from this transaction, fall back to the latest remaining match.
+            cur.execute(
+                """UPDATE flowmint.bills b SET last_paid_date = (
+                       SELECT MAX(t.date) FROM flowmint.bill_payments bp
+                       JOIN flowmint.transactions t ON t.id = bp.transaction_id
+                       WHERE bp.bill_id = b.id AND bp.status = 'matched')
+                   WHERE b.id = %s
+                     AND b.last_paid_date = (SELECT date FROM flowmint.transactions WHERE id = %s)""",
+                (bill_id, row[0])
+            )
+            conn.commit()
 
 
 @router.delete("/bills/{bill_id}", status_code=204)

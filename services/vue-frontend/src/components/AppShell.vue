@@ -196,6 +196,7 @@ const navItems = [
   { label: 'Transactions',  to: '/transactions', icon: 'pi-receipt' },
   { label: 'Budget',        to: '/budget',       icon: 'pi-chart-pie' },
   { label: 'Bills',         to: '/bills',        icon: 'pi-calendar-clock' },
+  { label: 'Subscriptions', to: '/subscriptions', icon: 'pi-replay' },
   { label: 'Properties',    to: '/properties',   icon: 'pi-building' },
   { label: 'Documents',     to: '/documents',    icon: 'pi-file' },
   { label: 'Planning',      to: '/planning',     icon: 'pi-compass' },

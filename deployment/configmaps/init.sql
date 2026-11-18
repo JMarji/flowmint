@@ -248,3 +248,45 @@ CREATE TABLE IF NOT EXISTS flowmint.subscription_tracking (
 
 CREATE INDEX IF NOT EXISTS subscription_tracking_user_status_idx
 ON flowmint.subscription_tracking (user_id, status);
+
+-- Mortgage payment status: Plaid mortgage liability snapshot + per-property due day
+CREATE TABLE IF NOT EXISTS flowmint.mortgage_liabilities (
+    account_id TEXT PRIMARY KEY REFERENCES flowmint.bank_accounts(account_id) ON DELETE CASCADE,
+    next_payment_due_date DATE,
+    next_monthly_payment NUMERIC(12,2),
+    last_payment_date DATE,
+    last_payment_amount NUMERIC(12,2),
+    past_due_amount NUMERIC(12,2),
+    current_late_fee NUMERIC(12,2),
+    escrow_balance NUMERIC(12,2),
+    ytd_interest_paid NUMERIC(12,2),
+    ytd_principal_paid NUMERIC(12,2),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE flowmint.properties
+ADD COLUMN IF NOT EXISTS mortgage_due_day INTEGER CHECK (mortgage_due_day BETWEEN 1 AND 31);
+
+-- Automatic payment detection: who tagged a transaction, learned bill merchants, bill<->transaction matches
+ALTER TABLE flowmint.transactions
+ADD COLUMN IF NOT EXISTS tag_source TEXT CHECK (tag_source IN ('auto', 'manual'));
+
+ALTER TABLE flowmint.bills
+ADD COLUMN IF NOT EXISTS match_key TEXT;
+
+CREATE TABLE IF NOT EXISTS flowmint.bill_payments (
+    id SERIAL PRIMARY KEY,
+    bill_id INTEGER NOT NULL REFERENCES flowmint.bills(id) ON DELETE CASCADE,
+    transaction_id INTEGER NOT NULL REFERENCES flowmint.transactions(id) ON DELETE CASCADE,
+    period TEXT NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('auto', 'manual')),
+    status TEXT NOT NULL DEFAULT 'matched' CHECK (status IN ('matched', 'rejected')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (bill_id, transaction_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS bill_payments_one_per_period
+ON flowmint.bill_payments (bill_id, period) WHERE status = 'matched';
+
+CREATE UNIQUE INDEX IF NOT EXISTS bill_payments_txn_once
+ON flowmint.bill_payments (transaction_id) WHERE status = 'matched';

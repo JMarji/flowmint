@@ -4,6 +4,8 @@ from pydantic import BaseModel
 
 import db_plaid
 import db_subscriptions
+import mortgage_status
+import payment_detection
 import plaid_client as pc
 from auth_routes import get_current_user
 
@@ -88,6 +90,7 @@ def exchange_public_token(body: ExchangeBody, current_user: dict = Depends(get_c
 
         # Sync liabilities for any properties already linked to accounts from this item
         _sync_liabilities_for_item(client, access_token)
+        _detect_payments(user_id)
         _detect_still_charging(user_id)
 
         return {"status": "linked", "institution": institution_name}
@@ -116,6 +119,7 @@ def sync(current_user: dict = Depends(get_current_user)):
         except ApiException as e:
             logger.error("Sync failed for item %s: %s", item["item_id"], e)
 
+    _detect_payments(user_id)
     _detect_still_charging(user_id)
     return {"synced": total_added, "items": len(items)}
 
@@ -185,6 +189,10 @@ def fetch_mortgage_liability(client, access_token: str, account_plaid_id: str) -
     """Return rate/payment/balance for a specific mortgage account, or None if unavailable."""
     try:
         res = client.liabilities_get(LiabilitiesGetRequest(access_token=access_token))
+        try:
+            mortgage_status.store_mortgage_liabilities(res.to_dict())
+        except Exception as e:
+            logger.warning("storing mortgage liabilities failed: %s", e)
         mortgages = res.liabilities.mortgage or []
         for m in mortgages:
             if m.account_id == account_plaid_id:
@@ -208,7 +216,12 @@ def _sync_liabilities_for_item(client, access_token: str):
     except ApiException:
         return  # item may not have liabilities product enabled
 
-    _sync_credit_liabilities(res.to_dict())
+    res_dict = res.to_dict()
+    _sync_credit_liabilities(res_dict)
+    try:
+        mortgage_status.store_mortgage_liabilities(res_dict)
+    except Exception as e:
+        logger.warning("storing mortgage liabilities failed: %s", e)
 
     for m in mortgages:
         property_ids = db_plaid.get_properties_linked_to_account(m.account_id)
@@ -255,6 +268,15 @@ def _sync_credit_liabilities(liabilities_response: dict):
             db_plaid.sync_credit_bill(account_id)
         except Exception as e:
             logger.warning("credit bill sync failed for %s: %s", account_id, e)
+
+
+def _detect_payments(user_id: int):
+    """Tag mortgage/auto-loan payments and match bill payments in newly synced transactions."""
+    try:
+        result = payment_detection.run_all(user_id)
+        logger.info("Payment detection for user %s: %s", user_id, result)
+    except Exception as e:
+        logger.warning("payment detection failed for user %s: %s", user_id, e)
 
 
 def _detect_still_charging(user_id: int):

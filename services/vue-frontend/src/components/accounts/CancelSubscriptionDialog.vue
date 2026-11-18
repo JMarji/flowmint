@@ -89,7 +89,8 @@ import api from '@/utils/api'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
-  accountId: { type: [String, Number], required: true },
+  // Card page passes the account; the all-accounts Subscriptions page relies on stream.account.db_id.
+  accountId: { type: [String, Number], default: null },
   stream: { type: Object, default: null },
 })
 const emit = defineEmits(['update:visible', 'saved'])
@@ -118,7 +119,7 @@ const decide = async (status) => {
   const s = props.stream
   try {
     await api.post('/api/subscriptions', {
-      account_db_id: Number(props.accountId),
+      account_db_id: Number(s.account?.db_id ?? props.accountId),
       stream_id: s.stream_id,
       merchant_name: s.name,
       frequency: s.frequency,

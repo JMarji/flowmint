@@ -137,6 +137,13 @@
                   <span v-if="txn.is_mortgage_payment" class="text-xs px-2 py-1 rounded-full" style="background: rgba(251,146,60,0.16); color: #fb923c">Mortgage</span>
                   <span v-if="txn.category === 'AUTO_LOAN_PAYMENT'" class="text-xs px-2 py-1 rounded-full" style="background: rgba(96,165,250,0.18); color: #60a5fa">Auto Loan</span>
                   <span v-if="txn.mortgage_property_id" class="text-xs px-2 py-1 rounded-full" style="background: rgba(251,146,60,0.22); color: #fdba74">Property: {{ txn.mortgage_property_address || `#${txn.mortgage_property_id}` }}</span>
+                  <span v-if="txn.is_mortgage_payment && !txn.mortgage_property_id" class="text-xs px-2 py-1 rounded-full" style="background: rgba(251,191,36,0.14); color: #fbbf24">Needs property</span>
+                  <span
+                    v-if="txn.tag_source === 'auto'"
+                    class="text-xs px-2 py-1 rounded-full"
+                    style="background: var(--mint-dim); color: var(--mint)"
+                    title="Tagged automatically from the payee, amount, and Plaid's category. Change the category or property link to override."
+                  ><i class="pi pi-bolt text-[10px]"></i> Auto-detected</span>
                 </div>
 
                 <div class="mt-3 flex gap-2">
@@ -290,7 +297,7 @@ const search = ref('')
 const route = useRoute()
 const accountFilter = ref(route.query.account ? String(route.query.account) : '')
 const accountOptions = ref([])
-const categoryFilter = ref('')
+const categoryFilter = ref(route.query.category ? String(route.query.category) : '')
 const startDate = ref('')
 const endDate = ref('')
 const selectedVendor = ref('')
