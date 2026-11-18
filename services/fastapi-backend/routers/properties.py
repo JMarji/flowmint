@@ -15,7 +15,11 @@ import re
 import db_plaid
 import plaid_client as pc
 from routers.plaid import fetch_mortgage_liability
+import logging
 import mortgage_status
+import payment_detection
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["properties"])
 
@@ -52,6 +56,13 @@ class PropertyUpdate(PropertyCreate):
     address: Optional[str] = None
     # Day of month the mortgage is due; 0 clears it (falls back to the 1st).
     mortgage_due_day: Optional[int] = Field(None, ge=0, le=31)
+    # Mortgage servicer as it appears on bank statements (e.g. "Shellpoint"); payments naming it are
+    # linked to this property automatically.
+    mortgage_lender: Optional[str] = Field(None, max_length=80)
+
+
+# Fields that may be cleared by sending null / "" (everything else ignores nulls, as before).
+_CLEARABLE = {"city", "state", "zip", "mortgage_lender"}
 
 
 class AddressEnrichBody(BaseModel):
@@ -582,9 +593,20 @@ def enrich_property_from_address(
 
 @router.put("/properties/{property_id}")
 def update_property(property_id: int, body: PropertyUpdate, current_user: dict = Depends(get_current_user)):
-    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    data = body.model_dump()
+    updates = {k: v for k, v in data.items() if v is not None}
+    for k in _CLEARABLE & body.model_fields_set:
+        if data[k] is None:
+            updates[k] = None
+    for k in ("address", "city", "zip", "mortgage_lender"):
+        if isinstance(updates.get(k), str):
+            updates[k] = updates[k].strip() or None
+    if isinstance(updates.get("state"), str):
+        updates["state"] = updates["state"].strip().upper() or None
     if updates.get("mortgage_due_day") == 0:
         updates["mortgage_due_day"] = None
+    if "address" in updates and not updates["address"]:
+        raise HTTPException(status_code=422, detail="Address can't be empty")
     if not updates:
         raise HTTPException(status_code=422, detail="No fields to update")
     cols = ", ".join(f"{k} = %s" for k in updates)
@@ -598,6 +620,12 @@ def update_property(property_id: int, body: PropertyUpdate, current_user: dict =
             if cur.rowcount == 0:
                 raise HTTPException(status_code=404, detail="Property not found")
             conn.commit()
+    if "mortgage_lender" in updates or "mortgage_payment" in updates:
+        # Re-match mortgage payments so the new lender/amount takes effect right away.
+        try:
+            payment_detection.detect_loan_payments(current_user["id"])
+        except Exception as e:
+            logger.warning("payment detection after property update failed: %s", e)
     return get_property(property_id, current_user)
 
 

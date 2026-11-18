@@ -224,5 +224,9 @@ def run_migrations():
                 CREATE UNIQUE INDEX IF NOT EXISTS bill_payments_txn_once
                 ON flowmint.bill_payments (transaction_id) WHERE status = 'matched'
             """)
+            cur.execute("""
+                ALTER TABLE flowmint.properties
+                ADD COLUMN IF NOT EXISTS mortgage_lender TEXT
+            """)
             conn.commit()
     logger.info("Migrations complete")

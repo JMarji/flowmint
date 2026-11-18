@@ -68,13 +68,16 @@ def detect_loan_payments(user_id: int) -> Dict[str, int]:
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT id, mortgage_payment FROM flowmint.properties
+                """SELECT id, mortgage_payment, mortgage_lender FROM flowmint.properties
                    WHERE user_id = %s
                      AND (mortgage_account_id IS NOT NULL OR mortgage_payment IS NOT NULL
-                          OR COALESCE(mortgage_balance, 0) > 0)""",
+                          OR COALESCE(mortgage_balance, 0) > 0 OR mortgage_lender IS NOT NULL)""",
                 (user_id,),
             )
-            props = [{"id": r[0], "payment": float(r[1]) if r[1] is not None else None} for r in cur.fetchall()]
+            props = [
+                {"id": r[0], "payment": float(r[1]) if r[1] is not None else None, "lender": lender_pattern(r[2])}
+                for r in cur.fetchall()
+            ]
 
             # Learn from existing links: payee -> property, and payees the user called a car payment.
             cur.execute(
@@ -96,9 +99,11 @@ def detect_loan_payments(user_id: int) -> Dict[str, int]:
                     car_payees.add(k)
             learned = {k: next(iter(v)) for k, v in payee_props.items() if len(v) == 1}
 
-            # Candidates: posted outflows from cash accounts that nobody has decided about yet.
+            # Candidates: posted outflows from cash accounts that nobody has decided about yet, plus earlier
+            # auto-tagged mortgage payments (re-checked so a newly set lender can correct their property).
             cur.execute(
-                """SELECT t.id, t.amount, t.date, t.name, t.merchant_name, t.category_detailed, t.category_override
+                """SELECT t.id, t.amount, t.date, t.name, t.merchant_name, t.category_detailed, t.category_override,
+                          t.tag_source, t.mortgage_property_id
                    FROM flowmint.transactions t
                    JOIN flowmint.bank_accounts ba ON ba.id = t.account_id
                    JOIN flowmint.bank_items bi ON bi.id = ba.item_id
@@ -107,22 +112,38 @@ def detect_loan_payments(user_id: int) -> Dict[str, int]:
                      AND t.amount > 0
                      AND t.pending = FALSE
                      AND t.date >= %s
-                     AND t.tag_source IS NULL
-                     AND t.mortgage_property_id IS NULL
-                     AND (t.category_override IS NULL OR t.category_override = 'MORTGAGE_PAYMENT')""",
+                     AND (
+                       (t.tag_source IS NULL AND t.mortgage_property_id IS NULL
+                        AND (t.category_override IS NULL OR t.category_override = 'MORTGAGE_PAYMENT'))
+                       OR (t.tag_source = 'auto' AND t.category_override = 'MORTGAGE_PAYMENT')
+                     )""",
                 (user_id, since),
             )
-            cols = ["id", "amount", "date", "name", "merchant_name", "category_detailed", "category_override"]
+            cols = ["id", "amount", "date", "name", "merchant_name", "category_detailed", "category_override",
+                    "tag_source", "property_id"]
             candidates = [dict(zip(cols, r)) for r in cur.fetchall()]
 
-            counts = {"mortgage_tagged": 0, "mortgage_linked": 0, "auto_loan_tagged": 0}
+            counts = {"mortgage_tagged": 0, "mortgage_linked": 0, "mortgage_relinked": 0, "auto_loan_tagged": 0}
             for t in candidates:
                 t["amount"] = float(t["amount"])
                 key = merchant_key(t["merchant_name"], t["name"])
-                is_mortgage = key in learned or _looks_like_mortgage(t)
+                lender_prop = _pick_by_lender(t, props)
 
+                if t["tag_source"] == "auto":
+                    # Already an auto-detected mortgage payment: only fix which property it belongs to.
+                    new_prop = lender_prop or (None if t["property_id"] else _pick_property(t, key, learned, props))
+                    if new_prop and new_prop != t["property_id"]:
+                        cur.execute(
+                            """UPDATE flowmint.transactions SET mortgage_property_id = %s
+                               WHERE id = %s AND tag_source = 'auto'""",
+                            (new_prop, t["id"]),
+                        )
+                        counts["mortgage_relinked"] += 1
+                    continue
+
+                is_mortgage = lender_prop is not None or key in learned or _looks_like_mortgage(t)
                 if is_mortgage:
-                    prop_id = _pick_property(t, key, learned, props)
+                    prop_id = lender_prop or _pick_property(t, key, learned, props)
                     # Don't guess on stray servicer charges (fees, escrow refunds) that aren't payment-sized.
                     if prop_id is None and t["category_detailed"] != _PFC_MORTGAGE and key not in learned:
                         if not any(_close(t["amount"], p["payment"], 0.25) for p in props):
@@ -147,6 +168,31 @@ def detect_loan_payments(user_id: int) -> Dict[str, int]:
                     counts["auto_loan_tagged"] += 1
         conn.commit()
     return counts
+
+
+def lender_pattern(lender: Optional[str]) -> Optional[re.Pattern]:
+    """Whole-word, punctuation-insensitive pattern for a lender name ('Mr. Cooper' matches 'MR COOPER')."""
+    words = re.findall(r"[a-z0-9]+", (lender or "").lower())
+    if not words:
+        return None
+    return re.compile(r"(?<![a-z0-9])" + r"[\s.\-_*/&]*".join(map(re.escape, words)) + r"(?![a-z0-9])")
+
+
+def _pick_by_lender(t: dict, props: List[dict]) -> Optional[int]:
+    """The property whose lender this payment names. Lenders like 'Citizens' are also ordinary banks,
+    so unless the transaction itself says mortgage, it must be payment-sized for that property."""
+    text = f"{t['merchant_name'] or ''} {t['name'] or ''}".lower()
+    named = [p for p in props if p["lender"] and p["lender"].search(text)]
+    if not named:
+        return None
+    says_mortgage = t["category_detailed"] == _PFC_MORTGAGE or bool(_MORTGAGE_RE.search(text))
+    fits = [p for p in named if _close(t["amount"], p["payment"], 0.25)]
+    if says_mortgage and not fits:
+        fits = named  # e.g. an extra principal payment to the servicer
+    if len(fits) == 1:
+        return fits[0]["id"]
+    closest = [p for p in fits if _close(t["amount"], p["payment"], 0.03)]
+    return closest[0]["id"] if len(closest) == 1 else None
 
 
 def _pick_property(t: dict, key: str, learned: Dict[str, int], props: List[dict]) -> Optional[int]:

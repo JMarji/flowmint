@@ -290,3 +290,7 @@ ON flowmint.bill_payments (bill_id, period) WHERE status = 'matched';
 
 CREATE UNIQUE INDEX IF NOT EXISTS bill_payments_txn_once
 ON flowmint.bill_payments (transaction_id) WHERE status = 'matched';
+
+-- Who services each property's mortgage (used to match payments to the property)
+ALTER TABLE flowmint.properties
+ADD COLUMN IF NOT EXISTS mortgage_lender TEXT;

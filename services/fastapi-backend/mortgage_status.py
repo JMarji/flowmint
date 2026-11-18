@@ -327,21 +327,23 @@ def _from_payments(out: dict, payments: List[dict], due_day: int, expected: Opti
     return out
 
 
-def get_due_days(property_ids: List[int]) -> Dict[int, Optional[int]]:
+def _mortgage_settings(property_ids: List[int]) -> Dict[int, tuple]:
+    """property id -> (mortgage_due_day, mortgage_lender)"""
     if not property_ids:
         return {}
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, mortgage_due_day FROM flowmint.properties WHERE id = ANY(%s)", (property_ids,)
+                "SELECT id, mortgage_due_day, mortgage_lender FROM flowmint.properties WHERE id = ANY(%s)",
+                (property_ids,),
             )
-            return {r[0]: r[1] for r in cur.fetchall()}
+            return {r[0]: (r[1], r[2]) for r in cur.fetchall()}
 
 
 def attach(user_id: int, props: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Add `mortgage_due_day` and `mortgage_status` to property dicts."""
-    due_days = get_due_days([p["id"] for p in props])
+    """Add `mortgage_due_day`, `mortgage_lender` and `mortgage_status` to property dicts."""
+    settings = _mortgage_settings([p["id"] for p in props])
     for p in props:
-        p["mortgage_due_day"] = due_days.get(p["id"])
+        p["mortgage_due_day"], p["mortgage_lender"] = settings.get(p["id"], (None, None))
         p["mortgage_status"] = compute(user_id, p, p["mortgage_due_day"])
     return props

@@ -7,14 +7,32 @@
       </RouterLink>
       <div>
         <template v-if="editingPropertyTitle">
+          <div class="grid grid-cols-6 gap-2 w-[560px] max-w-full mb-2" @keydown.enter.prevent="savePropertyTitle" @keydown.esc.prevent="cancelEditPropertyTitle">
+            <label class="col-span-6">
+              <span class="block text-[11px] mb-1" style="color: var(--text-muted)">Address</span>
+              <InputText v-model="propertyTitleDraft" class="w-full" placeholder="502 Arabian Ave" />
+            </label>
+            <label class="col-span-3">
+              <span class="block text-[11px] mb-1" style="color: var(--text-muted)">City</span>
+              <InputText v-model="locationDraft.city" class="w-full" placeholder="Pocatello" />
+            </label>
+            <label class="col-span-1">
+              <span class="block text-[11px] mb-1" style="color: var(--text-muted)">State</span>
+              <InputText v-model="locationDraft.state" class="w-full" placeholder="ID" maxlength="2" />
+            </label>
+            <label class="col-span-2">
+              <span class="block text-[11px] mb-1" style="color: var(--text-muted)">ZIP</span>
+              <InputText v-model="locationDraft.zip" class="w-full" placeholder="83201" maxlength="10" />
+            </label>
+            <label class="col-span-6">
+              <span class="block text-[11px] mb-1" style="color: var(--text-muted)">Mortgage lender / servicer</span>
+              <InputText v-model="locationDraft.mortgage_lender" class="w-full" placeholder="e.g. Shellpoint, Citizens, Rocket Mortgage" />
+              <span class="block text-[10px] mt-1" style="color: var(--text-muted)">
+                As it appears on your bank statement. Payments to this lender are linked to this property automatically.
+              </span>
+            </label>
+          </div>
           <div class="flex items-center gap-2">
-            <InputText
-              v-model="propertyTitleDraft"
-              class="w-[320px] max-w-full"
-              placeholder="Enter property title or address"
-              @keydown.enter.prevent="savePropertyTitle"
-              @keydown.esc.prevent="cancelEditPropertyTitle"
-            />
             <Button
               @click="savePropertyTitle"
               size="small"
@@ -40,14 +58,25 @@
               v-if="property"
               @click="startEditPropertyTitle"
               class="p-1 rounded hover:opacity-80"
-              title="Edit property title"
+              title="Edit address, location and lender"
               style="color: var(--text-muted); background: var(--surface-2)"
             >
               <i class="pi pi-pencil text-xs"></i>
             </button>
           </div>
         </template>
-        <p class="text-xs" style="color: var(--text-muted)">{{ [property?.city, property?.state].filter(Boolean).join(', ') }}</p>
+        <p v-if="!editingPropertyTitle" class="text-xs" style="color: var(--text-muted)">
+          {{ [property?.city, property?.state].filter(Boolean).join(', ') }}{{ property?.zip ? ' ' + property.zip : '' }}
+          <button
+            v-if="property && !property.city && !property.state"
+            class="hover:underline"
+            style="color: var(--mint)"
+            @click="startEditPropertyTitle"
+          >+ Add city &amp; state</button>
+          <span v-if="property?.mortgage_lender">
+            <span v-if="property?.city || property?.state"> · </span>Mortgage: {{ property.mortgage_lender }}
+          </span>
+        </p>
         <p v-if="propertyTitleStatus" class="text-[11px] mt-1" style="color: var(--text-muted)">{{ propertyTitleStatus }}</p>
       </div>
     </div>
@@ -1300,8 +1329,16 @@ const startEditCurrentValue = () => {
   editingCurrentValue.value = true
 }
 
+const locationDraft = ref({ city: '', state: '', zip: '', mortgage_lender: '' })
+
 const startEditPropertyTitle = () => {
   propertyTitleDraft.value = property.value?.address || ''
+  locationDraft.value = {
+    city: property.value?.city || '',
+    state: property.value?.state || '',
+    zip: property.value?.zip || '',
+    mortgage_lender: property.value?.mortgage_lender || '',
+  }
   propertyTitleStatus.value = ''
   editingPropertyTitle.value = true
 }
@@ -1322,12 +1359,24 @@ const savePropertyTitle = async () => {
   savingPropertyTitle.value = true
   propertyTitleStatus.value = ''
   try {
-    const res = await api.put(`/api/properties/${propertyId}`, { address: nextTitle })
+    const d = locationDraft.value
+    const lenderChanged = (d.mortgage_lender || '').trim() !== (property.value?.mortgage_lender || '')
+    // Empty city/state/zip/lender clear the field on the server.
+    const res = await api.put(`/api/properties/${propertyId}`, {
+      address: nextTitle,
+      city: d.city.trim() || null,
+      state: d.state.trim().toUpperCase() || null,
+      zip: d.zip.trim() || null,
+      mortgage_lender: d.mortgage_lender.trim() || null,
+    })
     property.value = res.data
     editingPropertyTitle.value = false
-    propertyTitleStatus.value = 'Property title saved'
+    propertyTitleStatus.value = lenderChanged && res.data.mortgage_lender
+      ? `Saved. Payments to ${res.data.mortgage_lender} are now linked to this property.`
+      : 'Saved'
   } catch (err) {
-    propertyTitleStatus.value = err.response?.data?.detail || 'Could not save property title'
+    const detail = err.response?.data?.detail
+    propertyTitleStatus.value = typeof detail === 'string' ? detail : 'Could not save property details'
   } finally {
     savingPropertyTitle.value = false
   }
