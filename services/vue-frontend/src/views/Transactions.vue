@@ -263,6 +263,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import InputText from 'primevue/inputtext'
 import Button from 'primevue/button'
+import { useRoute } from 'vue-router'
 import api from '@/utils/api'
 import VendorAggregation from '@/components/transactions/VendorAggregation.vue'
 import { usePlaidSync } from '@/composables/usePlaidSync'
@@ -286,7 +287,8 @@ const transactions = ref([])
 const total = ref(0)
 const loading = ref(true)
 const search = ref('')
-const accountFilter = ref('')
+const route = useRoute()
+const accountFilter = ref(route.query.account ? String(route.query.account) : '')
 const accountOptions = ref([])
 const categoryFilter = ref('')
 const startDate = ref('')

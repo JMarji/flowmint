@@ -37,10 +37,13 @@
       <div v-for="(group, inst) in grouped" :key="inst">
         <p class="text-xs font-semibold uppercase tracking-wider mb-2" style="color: var(--text-muted)">{{ inst }}</p>
         <div class="space-y-2">
-          <div
+          <component
+            :is="isCreditCard(acct) ? RouterLink : 'div'"
             v-for="acct in group"
             :key="acct.id"
+            v-bind="isCreditCard(acct) ? { to: { name: 'credit-card-detail', params: { id: acct.id } } } : {}"
             class="rounded-xl border p-4 flex items-center justify-between"
+            :class="{ 'account-row--link': isCreditCard(acct) }"
             style="background: var(--surface); border-color: var(--border)"
           >
             <div class="flex items-center gap-3">
@@ -60,13 +63,16 @@
                 </div>
               </div>
             </div>
-            <div class="text-right">
-              <p class="text-lg font-bold" style="color: var(--mint)">${{ fmt(acct.current_balance) }}</p>
-              <p v-if="acct.available_balance !== null" class="text-xs" style="color: var(--text-muted)">
-                ${{ fmt(acct.available_balance) }} available
-              </p>
+            <div class="flex items-center gap-3">
+              <div class="text-right">
+                <p class="text-lg font-bold" style="color: var(--mint)">${{ fmt(acct.current_balance) }}</p>
+                <p v-if="acct.available_balance !== null" class="text-xs" style="color: var(--text-muted)">
+                  ${{ fmt(acct.available_balance) }} available
+                </p>
+              </div>
+              <i v-if="isCreditCard(acct)" class="pi pi-chevron-right text-xs" style="color: var(--text-muted)"></i>
             </div>
-          </div>
+          </component>
         </div>
       </div>
 
@@ -84,6 +90,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { RouterLink } from 'vue-router'
 import Button from 'primevue/button'
 import api from '@/utils/api'
 import { usePlaid } from '@/composables/usePlaid'
@@ -172,6 +179,9 @@ const accountTypeCategory = (acct) => {
   return 'other'
 }
 
+// Only real Plaid credit accounts (numeric DB ids) get a detail page.
+const isCreditCard = (acct) => accountTypeCategory(acct) === 'credit' && typeof acct.id === 'number'
+
 const accountBadgeStyle = (acct) => {
   const category = accountTypeCategory(acct)
   if (category === 'loan') return 'background: rgba(251,146,60,0.16); color: #fb923c'
@@ -239,3 +249,14 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 </script>
+
+<style scoped>
+.account-row--link {
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.account-row--link:hover {
+  border-color: var(--mint) !important;
+  transform: translateY(-1px);
+}
+</style>

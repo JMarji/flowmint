@@ -160,6 +160,104 @@ def get_accounts_for_user(user_id: int) -> List[Dict[str, Any]]:
     ]
 
 
+def get_account_for_user(user_id: int, account_db_id: int) -> Optional[Dict[str, Any]]:
+    """Return a single linked account (with its item's decrypted access token) if the user owns it."""
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT ba.id, ba.account_id, ba.name, ba.type, ba.subtype, ba.mask,
+                       ba.current_balance, ba.available_balance, ba.updated_at,
+                       bi.institution_name, bi.id, bi.access_token_enc
+                FROM flowmint.bank_accounts ba
+                JOIN flowmint.bank_items bi ON ba.item_id = bi.id
+                WHERE bi.user_id = %s AND ba.id = %s
+                """,
+                (user_id, account_db_id)
+            )
+            r = cur.fetchone()
+    if not r:
+        return None
+    return {
+        "id": r[0],
+        "account_id": r[1],
+        "name": r[2],
+        "type": r[3],
+        "subtype": r[4],
+        "mask": r[5],
+        "current_balance": float(r[6]) if r[6] is not None else None,
+        "available_balance": float(r[7]) if r[7] is not None else None,
+        "updated_at": r[8].isoformat() if r[8] else None,
+        "institution_name": r[9],
+        "item_db_id": r[10],
+        "access_token": crypto.decrypt(r[11]),
+    }
+
+
+def get_account_spending_summary(account_db_id: int, months: int = 6) -> Dict[str, Any]:
+    """Aggregate charges/payments for one account: monthly totals and top categories/merchants.
+
+    Plaid sign convention: positive amount = charge (money out), negative = payment/credit.
+    """
+    category_sql = "COALESCE(t.category_override, t.category_primary, 'OTHER')"
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT to_char(date_trunc('month', t.date), 'YYYY-MM') AS month,
+                       COALESCE(SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END), 0) AS charges,
+                       COALESCE(SUM(CASE WHEN t.amount < 0 THEN -t.amount ELSE 0 END), 0) AS payments,
+                       COUNT(*) FILTER (WHERE t.amount > 0) AS charge_count
+                FROM flowmint.transactions t
+                WHERE t.account_id = %s
+                  AND t.date >= date_trunc('month', CURRENT_DATE) - make_interval(months => %s)
+                GROUP BY 1
+                ORDER BY 1
+                """,
+                (account_db_id, months - 1)
+            )
+            monthly = [
+                {"month": r[0], "charges": float(r[1]), "payments": float(r[2]), "charge_count": int(r[3])}
+                for r in cur.fetchall()
+            ]
+
+            cur.execute(
+                f"""
+                SELECT {category_sql} AS category, SUM(t.amount) AS total, COUNT(*)
+                FROM flowmint.transactions t
+                WHERE t.account_id = %s AND t.amount > 0
+                  AND t.date >= CURRENT_DATE - INTERVAL '90 days'
+                GROUP BY 1
+                ORDER BY total DESC
+                LIMIT 6
+                """,
+                (account_db_id,)
+            )
+            top_categories = [
+                {"category": r[0], "total": float(r[1]), "count": int(r[2])} for r in cur.fetchall()
+            ]
+
+            cur.execute(
+                """
+                SELECT COALESCE(NULLIF(TRIM(COALESCE(t.merchant_name, t.name, '')), ''), 'Unknown') AS merchant,
+                       SUM(t.amount) AS total, COUNT(*), MAX(t.logo_url)
+                FROM flowmint.transactions t
+                WHERE t.account_id = %s AND t.amount > 0
+                  AND t.date >= CURRENT_DATE - INTERVAL '90 days'
+                GROUP BY 1
+                ORDER BY total DESC
+                LIMIT 6
+                """,
+                (account_db_id,)
+            )
+            top_merchants = [
+                {"name": r[0], "total": float(r[1]), "count": int(r[2]), "logo_url": r[3]}
+                for r in cur.fetchall()
+            ]
+
+    return {"monthly": monthly, "top_categories": top_categories, "top_merchants": top_merchants}
+
+
 def get_loan_accounts_for_user(user_id: int) -> List[Dict[str, Any]]:
     """Return accounts with type='loan' that can be linked to properties."""
     with get_pool().connection() as conn:
