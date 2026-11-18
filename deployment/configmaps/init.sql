@@ -175,3 +175,50 @@ CREATE TABLE IF NOT EXISTS flowmint.plan_todos (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Credit card accounts: persisted Plaid liabilities, balance history, user card settings, auto-bills
+CREATE TABLE IF NOT EXISTS flowmint.credit_liabilities (
+    account_id TEXT PRIMARY KEY REFERENCES flowmint.bank_accounts(account_id) ON DELETE CASCADE,
+    credit_limit NUMERIC(12,2),
+    iso_currency_code TEXT,
+    is_overdue BOOLEAN,
+    last_payment_amount NUMERIC(12,2),
+    last_payment_date DATE,
+    last_statement_balance NUMERIC(12,2),
+    last_statement_issue_date DATE,
+    minimum_payment_amount NUMERIC(12,2),
+    next_payment_due_date DATE,
+    aprs JSONB NOT NULL DEFAULT '[]'::jsonb,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS flowmint.account_balance_snapshots (
+    account_id TEXT NOT NULL REFERENCES flowmint.bank_accounts(account_id) ON DELETE CASCADE,
+    snapshot_date DATE NOT NULL,
+    current_balance NUMERIC(12,2),
+    available_balance NUMERIC(12,2),
+    credit_limit NUMERIC(12,2),
+    PRIMARY KEY (account_id, snapshot_date)
+);
+
+CREATE TABLE IF NOT EXISTS flowmint.credit_card_settings (
+    account_id TEXT PRIMARY KEY REFERENCES flowmint.bank_accounts(account_id) ON DELETE CASCADE,
+    network TEXT,
+    product_name TEXT,
+    annual_fee NUMERIC(12,2),
+    annual_fee_month INTEGER CHECK (annual_fee_month BETWEEN 1 AND 12),
+    reward_type TEXT NOT NULL DEFAULT 'cashback' CHECK (reward_type IN ('cashback', 'points')),
+    point_value_cents NUMERIC(6,3) NOT NULL DEFAULT 1,
+    base_reward_rate NUMERIC(6,3) NOT NULL DEFAULT 0,
+    category_rates JSONB NOT NULL DEFAULT '{}'::jsonb,
+    auto_bill BOOLEAN NOT NULL DEFAULT TRUE,
+    bill_amount_mode TEXT NOT NULL DEFAULT 'statement' CHECK (bill_amount_mode IN ('statement', 'minimum')),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE flowmint.bills
+ADD COLUMN IF NOT EXISTS credit_account_id TEXT
+REFERENCES flowmint.bank_accounts(account_id) ON DELETE CASCADE;
+
+CREATE UNIQUE INDEX IF NOT EXISTS bills_credit_account_id_key
+ON flowmint.bills (credit_account_id) WHERE credit_account_id IS NOT NULL;

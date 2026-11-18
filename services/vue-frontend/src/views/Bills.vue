@@ -129,7 +129,15 @@
           <div v-else class="space-y-1.5 max-h-56 overflow-y-auto pr-1">
             <div v-for="bill in bills" :key="bill.id" class="rounded-md px-2 py-1.5 flex items-center justify-between" style="background: var(--surface-2)">
               <div class="min-w-0">
-                <p class="text-xs truncate" style="color: var(--text)">{{ bill.name }}</p>
+                <p class="text-xs truncate" style="color: var(--text)">
+                  <RouterLink
+                    v-if="bill.credit_account_db_id"
+                    :to="{ name: 'credit-card-detail', params: { id: bill.credit_account_db_id } }"
+                    class="hover:underline"
+                    title="Auto-synced from this card — open card"
+                  ><i class="pi pi-credit-card text-[10px] mr-1" style="color: var(--mint)"></i>{{ bill.name }}</RouterLink>
+                  <template v-else>{{ bill.name }}</template>
+                </p>
                 <p class="text-[10px]" style="color: var(--text-muted)">Day {{ bill.due_day_of_month }}</p>
               </div>
               <Button @click="deleteBill(bill.id)" icon="pi pi-trash" text rounded severity="secondary" size="small" />
@@ -210,6 +218,7 @@
 
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
+import { RouterLink } from 'vue-router'
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'

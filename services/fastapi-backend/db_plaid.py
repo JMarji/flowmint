@@ -1,4 +1,5 @@
 from typing import Optional, List, Dict, Any
+import json
 from datetime import datetime, timezone
 import logging
 
@@ -210,7 +211,7 @@ def get_account_spending_summary(account_db_id: int, months: int = 6) -> Dict[st
                        COUNT(*) FILTER (WHERE t.amount > 0) AS charge_count
                 FROM flowmint.transactions t
                 WHERE t.account_id = %s
-                  AND t.date >= date_trunc('month', CURRENT_DATE) - make_interval(months => %s)
+                  AND t.date >= date_trunc('month', CURRENT_DATE) - make_interval(months => %s::int)
                 GROUP BY 1
                 ORDER BY 1
                 """,
@@ -670,3 +671,331 @@ def override_transaction_mortgage_property(txn_id: int, user_id: int, property_i
             affected = cur.rowcount
             conn.commit()
             return affected > 0
+
+
+# ---------------------------------------------------------------------------
+# Credit cards: persisted liabilities, balance history, settings, auto-bills
+# ---------------------------------------------------------------------------
+
+# Categories that never earn rewards (fees, payments, transfers).
+_NON_REWARD_CATEGORIES = ("BANK_FEES", "LOAN_PAYMENTS", "TRANSFER_IN", "TRANSFER_OUT", "INCOME")
+
+_SETTINGS_DEFAULTS: Dict[str, Any] = {
+    "network": None,
+    "product_name": None,
+    "annual_fee": None,
+    "annual_fee_month": None,
+    "reward_type": "cashback",
+    "point_value_cents": 1.0,
+    "base_reward_rate": 0.0,
+    "category_rates": {},
+    "auto_bill": True,
+    "bill_amount_mode": "statement",
+}
+SETTINGS_FIELDS = tuple(_SETTINGS_DEFAULTS.keys())
+
+
+def _f(v):
+    return float(v) if v is not None else None
+
+
+def _iso(v):
+    return v.isoformat() if v is not None else None
+
+
+def record_balance_snapshot(
+    account_id: str,
+    current_balance: Optional[float],
+    available_balance: Optional[float],
+    credit_limit: Optional[float],
+):
+    """One row per account per day; later syncs on the same day overwrite it."""
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO flowmint.account_balance_snapshots
+                    (account_id, snapshot_date, current_balance, available_balance, credit_limit)
+                VALUES (%s, CURRENT_DATE, %s, %s, %s)
+                ON CONFLICT (account_id, snapshot_date) DO UPDATE SET
+                    current_balance   = EXCLUDED.current_balance,
+                    available_balance = EXCLUDED.available_balance,
+                    credit_limit      = COALESCE(EXCLUDED.credit_limit, flowmint.account_balance_snapshots.credit_limit)
+                """,
+                (account_id, current_balance, available_balance, credit_limit)
+            )
+            conn.commit()
+
+
+def get_balance_history(account_id: str, days: int = 365) -> List[Dict[str, Any]]:
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT snapshot_date, current_balance, available_balance, credit_limit
+                FROM flowmint.account_balance_snapshots
+                WHERE account_id = %s AND snapshot_date >= CURRENT_DATE - %s::int
+                ORDER BY snapshot_date
+                """,
+                (account_id, days)
+            )
+            rows = cur.fetchall()
+    return [
+        {"date": _iso(r[0]), "balance": _f(r[1]), "available": _f(r[2]), "limit": _f(r[3])}
+        for r in rows
+    ]
+
+
+def store_credit_liabilities(liabilities_response: Dict[str, Any]) -> List[str]:
+    """Persist credit-card liabilities from a Plaid /liabilities/get response (as a dict).
+
+    Returns the Plaid account_ids that were stored.
+    """
+    limits = {}
+    currencies = {}
+    for acct in liabilities_response.get("accounts") or []:
+        bal = acct.get("balances") or {}
+        limits[acct.get("account_id")] = bal.get("limit")
+        currencies[acct.get("account_id")] = bal.get("iso_currency_code")
+
+    stored = []
+    credits = (liabilities_response.get("liabilities") or {}).get("credit") or []
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            for c in credits:
+                acct_id = c.get("account_id")
+                if not acct_id:
+                    continue
+                aprs = [
+                    {
+                        "apr_type": a.get("apr_type"),
+                        "apr_percentage": a.get("apr_percentage"),
+                        "balance_subject_to_apr": a.get("balance_subject_to_apr"),
+                        "interest_charge_amount": a.get("interest_charge_amount"),
+                    }
+                    for a in (c.get("aprs") or [])
+                ]
+                cur.execute(
+                    """
+                    INSERT INTO flowmint.credit_liabilities
+                        (account_id, credit_limit, iso_currency_code, is_overdue,
+                         last_payment_amount, last_payment_date, last_statement_balance,
+                         last_statement_issue_date, minimum_payment_amount, next_payment_due_date,
+                         aprs, updated_at)
+                    SELECT %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, NOW()
+                    WHERE EXISTS (SELECT 1 FROM flowmint.bank_accounts WHERE account_id = %s)
+                    ON CONFLICT (account_id) DO UPDATE SET
+                        credit_limit              = EXCLUDED.credit_limit,
+                        iso_currency_code         = EXCLUDED.iso_currency_code,
+                        is_overdue                = EXCLUDED.is_overdue,
+                        last_payment_amount       = EXCLUDED.last_payment_amount,
+                        last_payment_date         = EXCLUDED.last_payment_date,
+                        last_statement_balance    = EXCLUDED.last_statement_balance,
+                        last_statement_issue_date = EXCLUDED.last_statement_issue_date,
+                        minimum_payment_amount    = EXCLUDED.minimum_payment_amount,
+                        next_payment_due_date     = EXCLUDED.next_payment_due_date,
+                        aprs                      = EXCLUDED.aprs,
+                        updated_at                = NOW()
+                    """,
+                    (
+                        acct_id, limits.get(acct_id), currencies.get(acct_id), c.get("is_overdue"),
+                        c.get("last_payment_amount"), c.get("last_payment_date"),
+                        c.get("last_statement_balance"), c.get("last_statement_issue_date"),
+                        c.get("minimum_payment_amount"), c.get("next_payment_due_date"),
+                        json.dumps(aprs), acct_id,
+                    )
+                )
+                if cur.rowcount:
+                    stored.append(acct_id)
+        conn.commit()
+    return stored
+
+
+def get_credit_liability(account_id: str) -> Optional[Dict[str, Any]]:
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT credit_limit, iso_currency_code, is_overdue, last_payment_amount,
+                       last_payment_date, last_statement_balance, last_statement_issue_date,
+                       minimum_payment_amount, next_payment_due_date, aprs, updated_at
+                FROM flowmint.credit_liabilities WHERE account_id = %s
+                """,
+                (account_id,)
+            )
+            r = cur.fetchone()
+    if not r:
+        return None
+    return {
+        "credit_limit": _f(r[0]),
+        "iso_currency_code": r[1],
+        "is_overdue": r[2],
+        "last_payment_amount": _f(r[3]),
+        "last_payment_date": _iso(r[4]),
+        "last_statement_balance": _f(r[5]),
+        "last_statement_issue_date": _iso(r[6]),
+        "minimum_payment_amount": _f(r[7]),
+        "next_payment_due_date": _iso(r[8]),
+        "aprs": r[9] or [],
+        "updated_at": _iso(r[10]),
+    }
+
+
+def get_credit_settings(account_id: str) -> Dict[str, Any]:
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {', '.join(SETTINGS_FIELDS)} FROM flowmint.credit_card_settings WHERE account_id = %s",
+                (account_id,)
+            )
+            r = cur.fetchone()
+    if not r:
+        return dict(_SETTINGS_DEFAULTS)
+    out = dict(zip(SETTINGS_FIELDS, r))
+    for k in ("annual_fee", "point_value_cents", "base_reward_rate"):
+        out[k] = _f(out[k])
+    out["category_rates"] = {k: float(v) for k, v in (out["category_rates"] or {}).items()}
+    return out
+
+
+def upsert_credit_settings(account_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+    merged = {**get_credit_settings(account_id), **{k: v for k, v in updates.items() if k in SETTINGS_FIELDS}}
+    values = [json.dumps(merged[k]) if k == "category_rates" else merged[k] for k in SETTINGS_FIELDS]
+    cols = ", ".join(SETTINGS_FIELDS)
+    placeholders = ", ".join("%s::jsonb" if k == "category_rates" else "%s" for k in SETTINGS_FIELDS)
+    sets = ", ".join(f"{k} = EXCLUDED.{k}" for k in SETTINGS_FIELDS)
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                INSERT INTO flowmint.credit_card_settings (account_id, {cols}, updated_at)
+                VALUES (%s, {placeholders}, NOW())
+                ON CONFLICT (account_id) DO UPDATE SET {sets}, updated_at = NOW()
+                """,
+                [account_id] + values
+            )
+            conn.commit()
+    return merged
+
+
+def sync_credit_bill(account_id: str) -> Optional[int]:
+    """Create/update (or remove) the auto-generated bill for a credit card.
+
+    Amount follows the card's bill_amount_mode (statement balance or minimum payment);
+    due day comes from Plaid's next_payment_due_date. The bill is marked paid when Plaid
+    reports a payment on or after the last statement date. Returns the bill id, if any.
+    """
+    liability = get_credit_liability(account_id)
+    settings = get_credit_settings(account_id)
+
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            if not settings["auto_bill"]:
+                cur.execute("DELETE FROM flowmint.bills WHERE credit_account_id = %s", (account_id,))
+                conn.commit()
+                return None
+
+            if not liability or not liability["next_payment_due_date"]:
+                return None
+
+            stmt = liability["last_statement_balance"]
+            minimum = liability["minimum_payment_amount"]
+            if settings["bill_amount_mode"] == "minimum":
+                amount = minimum if minimum is not None else stmt
+            else:
+                amount = stmt if stmt is not None else minimum
+            if amount is None:
+                return None
+
+            due_day = int(liability["next_payment_due_date"][8:10])
+            paid = None
+            if liability["last_payment_date"] and liability["last_statement_issue_date"] \
+                    and liability["last_payment_date"] >= liability["last_statement_issue_date"]:
+                paid = liability["last_payment_date"]
+
+            cur.execute(
+                """
+                SELECT bi.user_id, bi.institution_name, ba.name, ba.mask
+                FROM flowmint.bank_accounts ba
+                JOIN flowmint.bank_items bi ON ba.item_id = bi.id
+                WHERE ba.account_id = %s
+                """,
+                (account_id,)
+            )
+            owner = cur.fetchone()
+            if not owner:
+                return None
+            user_id, institution, acct_name, mask = owner
+            label = settings.get("product_name") or acct_name
+            name = f"{institution or 'Credit card'} · {label}" + (f" ••••{mask}" if mask else "")
+
+            def money(v):
+                return f"${v:,.2f}" if v is not None else "—"
+            notes = (
+                f"Auto-synced from Plaid. Statement {money(stmt)}, minimum {money(minimum)}, "
+                f"due {liability['next_payment_due_date']}."
+            )
+
+            cur.execute(
+                """
+                INSERT INTO flowmint.bills
+                    (user_id, name, amount, due_day_of_month, category, last_paid_date, notes, credit_account_id)
+                VALUES (%s, %s, %s, %s, 'CREDIT_CARD', %s, %s, %s)
+                ON CONFLICT (credit_account_id) WHERE credit_account_id IS NOT NULL DO UPDATE SET
+                    amount           = EXCLUDED.amount,
+                    due_day_of_month = EXCLUDED.due_day_of_month,
+                    last_paid_date   = COALESCE(EXCLUDED.last_paid_date, flowmint.bills.last_paid_date),
+                    notes            = EXCLUDED.notes
+                RETURNING id
+                """,
+                (user_id, name, amount, due_day, paid, notes, account_id)
+            )
+            bill_id = cur.fetchone()[0]
+            conn.commit()
+            return bill_id
+
+
+def get_credit_bill_id(account_id: str) -> Optional[int]:
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM flowmint.bills WHERE credit_account_id = %s", (account_id,))
+            r = cur.fetchone()
+    return r[0] if r else None
+
+
+def get_cycle_activity(account_db_id: int, since: str) -> Dict[str, Any]:
+    """Charges/payments on or after `since` (ISO date) for one account."""
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0),
+                       COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0),
+                       COUNT(*) FILTER (WHERE amount > 0)
+                FROM flowmint.transactions
+                WHERE account_id = %s AND date >= %s::date
+                """,
+                (account_db_id, since)
+            )
+            r = cur.fetchone()
+    return {"charges": float(r[0]), "payments": float(r[1]), "charge_count": int(r[2])}
+
+
+def get_reward_eligible_spend(account_db_id: int, since: str) -> List[Dict[str, Any]]:
+    """Charges since `since`, grouped by (primary, detailed) category, excluding fees/payments/transfers."""
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COALESCE(t.category_override, t.category_primary, 'OTHER') AS primary_cat,
+                       t.category_detailed,
+                       SUM(t.amount)
+                FROM flowmint.transactions t
+                WHERE t.account_id = %s AND t.amount > 0 AND t.date >= %s::date
+                  AND COALESCE(t.category_override, t.category_primary, 'OTHER') <> ALL(%s)
+                GROUP BY 1, 2
+                """,
+                (account_db_id, since, list(_NON_REWARD_CATEGORIES))
+            )
+            rows = cur.fetchall()
+    return [{"primary": r[0], "detailed": r[1], "total": float(r[2])} for r in rows]

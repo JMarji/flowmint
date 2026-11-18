@@ -1,7 +1,10 @@
+import calendar
 import logging
-from datetime import date
+from datetime import date, timedelta
+from typing import Dict, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 import db_plaid
 import plaid_client as pc
 from database import get_pool
@@ -9,7 +12,7 @@ from auth_routes import get_current_user
 
 from plaid.model.liabilities_get_request import LiabilitiesGetRequest
 from plaid.model.liabilities_get_request_options import LiabilitiesGetRequestOptions
-from plaid.exceptions import ApiException
+from plaid.model.transactions_recurring_get_request import TransactionsRecurringGetRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["accounts"])
@@ -75,17 +78,35 @@ def unlink_account(item_db_id: int, current_user: dict = Depends(get_current_use
     return {"deleted": item_db_id}
 
 
-def _jsonable(v):
-    if isinstance(v, date):
-        return v.isoformat()
-    return v
+
+# ---------------------------------------------------------------------------
+# Credit cards
+# ---------------------------------------------------------------------------
+
+class CreditSettingsBody(BaseModel):
+    network: Optional[Literal["visa", "mastercard", "amex", "discover", "other"]] = None
+    product_name: Optional[str] = Field(None, max_length=80)
+    annual_fee: Optional[float] = Field(None, ge=0)
+    annual_fee_month: Optional[int] = Field(None, ge=1, le=12)
+    reward_type: Optional[Literal["cashback", "points"]] = None
+    point_value_cents: Optional[float] = Field(None, ge=0, le=100)
+    base_reward_rate: Optional[float] = Field(None, ge=0, le=100)
+    category_rates: Optional[Dict[str, float]] = None
+    auto_bill: Optional[bool] = None
+    bill_amount_mode: Optional[Literal["statement", "minimum"]] = None
 
 
-def _fetch_credit_liability(access_token: str, account_plaid_id: str) -> dict:
-    """Live-fetch Plaid credit-card liability details + credit limit for one account.
+def _get_credit_account(user_id: int, account_db_id: int) -> dict:
+    acct = db_plaid.get_account_for_user(user_id, account_db_id)
+    if not acct:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if (acct.get("type") or "").lower() != "credit":
+        raise HTTPException(status_code=400, detail="Not a credit account")
+    return acct
 
-    Returns {} if the item doesn't have the liabilities product or Plaid errors.
-    """
+
+def _refresh_credit_liability(access_token: str, account_plaid_id: str):
+    """Live-fetch liabilities for one account and persist them. Used when nothing is stored yet."""
     try:
         res = pc.get_plaid_client().liabilities_get(
             LiabilitiesGetRequest(
@@ -93,60 +114,198 @@ def _fetch_credit_liability(access_token: str, account_plaid_id: str) -> dict:
                 options=LiabilitiesGetRequestOptions(account_ids=[account_plaid_id]),
             )
         ).to_dict()
-    except ApiException as e:
+    except Exception as e:  # Plaid API/network errors must not break the page; it renders without liability data
         logger.warning("liabilities_get failed for account %s: %s", account_plaid_id, e)
-        return {}
+        return
+    for acct_id in db_plaid.store_credit_liabilities(res):
+        db_plaid.sync_credit_bill(acct_id)
 
-    out: dict = {}
-    for acct in res.get("accounts") or []:
-        if acct.get("account_id") == account_plaid_id:
-            balances = acct.get("balances") or {}
-            out["credit_limit"] = balances.get("limit")
-            out["iso_currency_code"] = balances.get("iso_currency_code")
 
-    for c in (res.get("liabilities") or {}).get("credit") or []:
-        if c.get("account_id") != account_plaid_id:
-            continue
-        out.update({
-            "is_overdue": c.get("is_overdue"),
-            "last_payment_amount": c.get("last_payment_amount"),
-            "last_payment_date": _jsonable(c.get("last_payment_date")),
-            "last_statement_balance": c.get("last_statement_balance"),
-            "last_statement_issue_date": _jsonable(c.get("last_statement_issue_date")),
-            "minimum_payment_amount": c.get("minimum_payment_amount"),
-            "next_payment_due_date": _jsonable(c.get("next_payment_due_date")),
-            "aprs": [
-                {
-                    "apr_type": a.get("apr_type"),
-                    "apr_percentage": a.get("apr_percentage"),
-                    "balance_subject_to_apr": a.get("balance_subject_to_apr"),
-                    "interest_charge_amount": a.get("interest_charge_amount"),
-                }
-                for a in (c.get("aprs") or [])
-            ],
-        })
-    return out
+def _add_month(d: date) -> date:
+    y, m = (d.year + 1, 1) if d.month == 12 else (d.year, d.month + 1)
+    return d.replace(year=y, month=m, day=min(d.day, calendar.monthrange(y, m)[1]))
+
+
+def _statement_cycle(liability: dict) -> dict:
+    """Current billing cycle. Uses the last statement date when Plaid has one, else the calendar month."""
+    today = date.today()
+    issued = liability.get("last_statement_issue_date")
+    if issued:
+        last_close = date.fromisoformat(issued)
+        next_close = _add_month(last_close)
+        while next_close < today:  # stale statement data — roll forward
+            last_close, next_close = next_close, _add_month(next_close)
+        start, source = last_close + timedelta(days=1), "statement"
+    else:
+        start = today.replace(day=1)
+        next_close = _add_month(start) - timedelta(days=1)
+        source = "calendar"
+    return {
+        "start": start.isoformat(),
+        "next_close": next_close.isoformat(),
+        "days_left": (next_close - today).days,
+        "days_total": (next_close - start).days + 1,
+        "source": source,
+    }
+
+
+def _reward_rate(settings: dict, primary: Optional[str], detailed: Optional[str]) -> float:
+    rates = settings.get("category_rates") or {}
+    if detailed and detailed in rates:
+        return rates[detailed]
+    if primary and primary in rates:
+        return rates[primary]
+    return settings.get("base_reward_rate") or 0.0
+
+
+def _estimate_rewards(settings: dict, rows: list) -> dict:
+    """cashback: rate is a percent. points: rate is points per dollar, valued at point_value_cents."""
+    by_cat: Dict[str, dict] = {}
+    total_value = 0.0
+    total_points = 0.0
+    for r in rows:
+        rate = _reward_rate(settings, r["primary"], r["detailed"])
+        if settings["reward_type"] == "points":
+            pts = r["total"] * rate
+            value = pts * (settings.get("point_value_cents") or 1.0) / 100
+            total_points += pts
+        else:
+            value = r["total"] * rate / 100
+        total_value += value
+        bucket = by_cat.setdefault(r["primary"], {"category": r["primary"], "spend": 0.0, "value": 0.0})
+        bucket["spend"] += r["total"]
+        bucket["value"] += value
+    return {
+        "value": round(total_value, 2),
+        "points": round(total_points) if settings["reward_type"] == "points" else None,
+        "by_category": sorted(by_cat.values(), key=lambda b: b["value"], reverse=True),
+    }
 
 
 @router.get("/accounts/{account_db_id}/credit")
 def credit_account_detail(account_db_id: int, current_user: dict = Depends(get_current_user)):
-    """Credit card detail: account info, live Plaid liability data, and spending summary."""
-    acct = db_plaid.get_account_for_user(current_user["id"], account_db_id)
-    if not acct:
-        raise HTTPException(status_code=404, detail="Account not found")
-
+    """Credit card detail: stored Plaid liability data, cycle, rewards, history, and spending."""
+    acct = _get_credit_account(current_user["id"], account_db_id)
     access_token = acct.pop("access_token")
-    liability = _fetch_credit_liability(access_token, acct["account_id"])
-    spending = db_plaid.get_account_spending_summary(account_db_id)
+    plaid_id = acct["account_id"]
+
+    liability = db_plaid.get_credit_liability(plaid_id)
+    if liability is None:
+        _refresh_credit_liability(access_token, plaid_id)
+        liability = db_plaid.get_credit_liability(plaid_id)
+    liability_available = liability is not None
+    liability = liability or {}
+
+    settings = db_plaid.get_credit_settings(plaid_id)
+    history = db_plaid.get_balance_history(plaid_id)
 
     limit = liability.get("credit_limit")
+    if limit is None:  # fall back to the limit captured with balance snapshots
+        limit = next((h["limit"] for h in reversed(history) if h["limit"] is not None), None)
+        liability["credit_limit"] = limit
     balance = acct.get("current_balance")
     utilization = (balance / limit * 100) if (limit and balance is not None) else None
+
+    cycle = _statement_cycle(liability)
+    cycle.update(db_plaid.get_cycle_activity(account_db_id, cycle["start"]))
+
+    year_ago = (date.today() - timedelta(days=365)).isoformat()
+    rewards_12m = _estimate_rewards(settings, db_plaid.get_reward_eligible_spend(account_db_id, year_ago))
+    rewards_cycle = _estimate_rewards(settings, db_plaid.get_reward_eligible_spend(account_db_id, cycle["start"]))
+    annual_fee = settings.get("annual_fee") or 0.0
 
     return {
         "account": acct,
         "liability": liability,
-        "liability_available": bool(liability.get("aprs") is not None or liability.get("credit_limit") is not None),
+        "liability_available": liability_available,
         "utilization": utilization,
-        "spending": spending,
+        "available_credit": (limit - balance) if (limit is not None and balance is not None) else None,
+        "settings": settings,
+        "cycle": cycle,
+        "rewards": {
+            "configured": bool(settings.get("base_reward_rate") or settings.get("category_rates")),
+            "reward_type": settings["reward_type"],
+            "cycle": rewards_cycle,
+            "trailing_12m": rewards_12m,
+            "annual_fee": annual_fee,
+            "net_12m": round(rewards_12m["value"] - annual_fee, 2),
+        },
+        "balance_history": history,
+        "bill_id": db_plaid.get_credit_bill_id(plaid_id),
+        "spending": db_plaid.get_account_spending_summary(account_db_id),
     }
+
+
+@router.put("/accounts/{account_db_id}/credit/settings")
+def update_credit_settings(
+    account_db_id: int, body: CreditSettingsBody, current_user: dict = Depends(get_current_user)
+):
+    """Save user-entered card details (network, rewards, annual fee, auto-bill preferences)."""
+    acct = _get_credit_account(current_user["id"], account_db_id)
+    updates = body.model_dump(exclude_unset=True)
+    if "category_rates" in updates and updates["category_rates"] is not None:
+        updates["category_rates"] = {
+            k.strip().upper(): float(v)
+            for k, v in updates["category_rates"].items()
+            if k and k.strip() and v is not None and v >= 0
+        }
+    settings = db_plaid.upsert_credit_settings(acct["account_id"], updates)
+    bill_id = db_plaid.sync_credit_bill(acct["account_id"])
+    return {"settings": settings, "bill_id": bill_id}
+
+
+@router.get("/accounts/{account_db_id}/credit/recurring")
+def credit_recurring_charges(account_db_id: int, current_user: dict = Depends(get_current_user)):
+    """Subscriptions and other recurring charges on this card, via Plaid /transactions/recurring/get."""
+    acct = _get_credit_account(current_user["id"], account_db_id)
+    try:
+        res = pc.get_plaid_client().transactions_recurring_get(
+            TransactionsRecurringGetRequest(
+                access_token=acct["access_token"],
+                account_ids=[acct["account_id"]],
+            )
+        ).to_dict()
+    except Exception as e:  # product not enabled, Plaid outage, etc.
+        logger.warning("transactions_recurring_get failed for account %s: %s", acct["account_id"], e)
+        return {"available": False, "streams": [], "monthly_total": 0.0}
+
+    per_month = {
+        "WEEKLY": 52 / 12, "BIWEEKLY": 26 / 12, "SEMI_MONTHLY": 2.0,
+        "MONTHLY": 1.0, "ANNUALLY": 1 / 12,
+    }
+    streams = []
+    for st in res.get("outflow_streams") or []:
+        if not st.get("is_active", True):
+            continue
+        freq = _enum_str(st.get("frequency")) or "UNKNOWN"
+        avg = abs(float((st.get("average_amount") or {}).get("amount") or 0))
+        last = abs(float((st.get("last_amount") or {}).get("amount") or 0))
+        pfc = st.get("personal_finance_category") or {}
+        streams.append({
+            "stream_id": st.get("stream_id"),
+            "name": st.get("merchant_name") or st.get("description") or "Unknown",
+            "description": st.get("description"),
+            "frequency": freq,
+            "average_amount": avg,
+            "last_amount": last,
+            "last_date": _iso_date(st.get("last_date")),
+            "next_date": _iso_date(st.get("predicted_next_date")),
+            "status": _enum_str(st.get("status")) or "",
+            "category": pfc.get("primary"),
+            "monthly_equivalent": round(last * per_month.get(freq, 0), 2),
+        })
+    streams.sort(key=lambda x: x["monthly_equivalent"], reverse=True)
+    return {
+        "available": True,
+        "streams": streams,
+        "monthly_total": round(sum(x["monthly_equivalent"] for x in streams), 2),
+    }
+
+
+def _enum_str(v):
+    v = getattr(v, "value", v)
+    return str(v) if v is not None else None
+
+
+def _iso_date(v):
+    return v.isoformat() if isinstance(v, date) else v

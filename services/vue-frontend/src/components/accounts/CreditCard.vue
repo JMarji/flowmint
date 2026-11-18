@@ -8,15 +8,14 @@
   >
     <!-- decorative sheen -->
     <div class="sheen"></div>
-    <div class="ring ring-1"></div>
-    <div class="ring ring-2"></div>
+    <div class="ring"></div>
 
     <div class="relative h-full flex flex-col justify-between">
       <!-- Top row -->
       <div class="flex items-start justify-between">
         <div class="min-w-0">
           <p class="issuer truncate">{{ institution || 'Credit Card' }}</p>
-          <p v-if="!compact" class="product truncate">{{ name }}</p>
+          <p v-if="!compact" class="product truncate">{{ productName || name }}</p>
         </div>
         <i class="pi pi-wifi contactless"></i>
       </div>
@@ -37,9 +36,14 @@
           <p class="label">Balance</p>
           <p class="value">{{ money(balance) }}</p>
         </div>
-        <div v-if="limit" class="text-right">
-          <p class="label">Limit</p>
-          <p class="value">{{ money(limit) }}</p>
+        <div class="flex items-end gap-4">
+          <div v-if="limit" class="text-right">
+            <p class="label">Limit</p>
+            <p class="value">{{ money(limit) }}</p>
+          </div>
+          <!-- Network marks are drawn generically (no brand artwork) -->
+          <div v-if="network === 'mastercard'" class="mc-mark" aria-label="Mastercard"><span></span><span></span></div>
+          <p v-else-if="networkLabel" class="network-text" :aria-label="networkLabel">{{ networkLabel }}</p>
         </div>
       </div>
     </div>
@@ -53,6 +57,8 @@ const props = defineProps({
   name: { type: String, default: '' },
   institution: { type: String, default: '' },
   mask: { type: String, default: '' },
+  productName: { type: String, default: '' },
+  network: { type: String, default: '' }, // visa | mastercard | amex | discover | other
   balance: { type: Number, default: null },
   limit: { type: Number, default: null },
   compact: { type: Boolean, default: false },
@@ -76,6 +82,12 @@ const gradient = computed(() => {
   const [a, b, c] = PALETTES[h % PALETTES.length]
   return `linear-gradient(135deg, ${a} 0%, ${b} 55%, ${c} 100%)`
 })
+
+const networkLabel = computed(() => ({
+  visa: 'VISA',
+  amex: 'AMEX',
+  discover: 'DISCOVER',
+}[props.network] || ''))
 
 const money = (v) =>
   v == null
@@ -110,8 +122,7 @@ const money = (v) =>
   border: 1px solid rgba(255, 255, 255, 0.08);
   pointer-events: none;
 }
-.ring-1 { width: 260px; height: 260px; right: -90px; top: -110px; }
-.ring-2 { width: 200px; height: 200px; right: -40px; bottom: -130px; }
+.ring { width: 260px; height: 260px; right: -110px; top: -130px; }
 
 .issuer { font-size: 13px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
 .product { font-size: 11px; opacity: 0.75; margin-top: 2px; }
@@ -141,6 +152,27 @@ const money = (v) =>
 .label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.12em; opacity: 0.65; }
 .value { font-size: 15px; font-weight: 600; }
 
+.network-text {
+  font-size: 18px;
+  font-weight: 800;
+  font-style: italic;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  opacity: 0.95;
+}
+.mc-mark { display: flex; }
+.mc-mark span {
+  width: 26px;
+  height: 26px;
+  border-radius: 9999px;
+  opacity: 0.9;
+}
+.mc-mark span:first-child { background: #eb001b; }
+.mc-mark span:last-child { background: #f79e1b; margin-left: -10px; mix-blend-mode: screen; }
+
+.credit-card--compact .network-text { font-size: 12px; }
+.credit-card--compact .mc-mark span { width: 16px; height: 16px; }
+.credit-card--compact .mc-mark span:last-child { margin-left: -6px; }
 .credit-card--compact .chip { width: 30px; height: 22px; padding: 3px; }
 .credit-card--compact .number { font-size: 12px; gap: 8px; }
 .credit-card--compact .issuer { font-size: 11px; }

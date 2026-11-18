@@ -54,6 +54,8 @@ def _row_to_bill(r) -> dict:
         "is_active": r[5], "last_paid_date": str(r[6]) if r[6] else None,
         "notes": r[7], "created_at": r[8].isoformat(),
         "next_due": _next_due(r[3]),
+        # Set when the bill is auto-generated from a Plaid credit card (bank_accounts.id).
+        "credit_account_db_id": r[9] if len(r) > 9 else None,
     }
 
 
@@ -62,11 +64,12 @@ def list_bills(current_user: dict = Depends(get_current_user)):
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT id, name, amount, due_day_of_month, category, is_active,
-                          last_paid_date, notes, created_at
-                   FROM flowmint.bills
-                   WHERE user_id = %s
-                   ORDER BY due_day_of_month, name""",
+                """SELECT b.id, b.name, b.amount, b.due_day_of_month, b.category, b.is_active,
+                          b.last_paid_date, b.notes, b.created_at, ba.id
+                   FROM flowmint.bills b
+                   LEFT JOIN flowmint.bank_accounts ba ON ba.account_id = b.credit_account_id
+                   WHERE b.user_id = %s
+                   ORDER BY b.due_day_of_month, b.name""",
                 (current_user["id"],)
             )
             rows = cur.fetchall()
@@ -132,9 +135,18 @@ def delete_bill(bill_id: int, current_user: dict = Depends(get_current_user)):
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "DELETE FROM flowmint.bills WHERE id = %s AND user_id = %s",
+                "DELETE FROM flowmint.bills WHERE id = %s AND user_id = %s RETURNING credit_account_id",
                 (bill_id, current_user["id"])
             )
-            if cur.rowcount == 0:
+            row = cur.fetchone()
+            if row is None:
                 raise HTTPException(status_code=404, detail="Bill not found")
+            if row[0]:
+                # Deleting a card's auto-bill opts that card out, so the next sync doesn't recreate it.
+                cur.execute(
+                    """INSERT INTO flowmint.credit_card_settings (account_id, auto_bill)
+                       VALUES (%s, FALSE)
+                       ON CONFLICT (account_id) DO UPDATE SET auto_bill = FALSE, updated_at = NOW()""",
+                    (row[0],)
+                )
             conn.commit()

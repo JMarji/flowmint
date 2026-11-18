@@ -136,6 +136,15 @@ def _sync_accounts(client, access_token: str, item_db_id: int):
             current_balance=balances.get("current"),
             available_balance=balances.get("available"),
         )
+        try:
+            db_plaid.record_balance_snapshot(
+                acct["account_id"],
+                balances.get("current"),
+                balances.get("available"),
+                balances.get("limit"),
+            )
+        except Exception as e:  # history is best-effort; never block a sync on it
+            logger.warning("balance snapshot failed for %s: %s", acct["account_id"], e)
 
 
 def _sync_transactions(client, access_token: str, item_db_id: int, cursor: str = None) -> int:
@@ -196,6 +205,8 @@ def _sync_liabilities_for_item(client, access_token: str):
     except ApiException:
         return  # item may not have liabilities product enabled
 
+    _sync_credit_liabilities(res.to_dict())
+
     for m in mortgages:
         property_ids = db_plaid.get_properties_linked_to_account(m.account_id)
         if not property_ids:
@@ -227,6 +238,20 @@ def _sync_liabilities_for_item(client, access_token: str):
                             list(updates.values()) + [prop_id]
                         )
             conn.commit()
+
+
+def _sync_credit_liabilities(liabilities_response: dict):
+    """Persist credit-card liability data and refresh each card's auto-generated bill."""
+    try:
+        stored = db_plaid.store_credit_liabilities(liabilities_response)
+    except Exception as e:
+        logger.warning("storing credit liabilities failed: %s", e)
+        return
+    for account_id in stored:
+        try:
+            db_plaid.sync_credit_bill(account_id)
+        except Exception as e:
+            logger.warning("credit bill sync failed for %s: %s", account_id, e)
 
 
 def _plaid_txn_to_dict(t) -> dict:

@@ -76,10 +76,36 @@
         </div>
       </div>
 
-      <!-- Total row -->
-      <div class="rounded-xl border p-4 flex justify-between items-center" style="background: var(--surface-2); border-color: var(--mint)">
-        <p class="font-semibold" style="color: var(--text)">Total Balance</p>
-        <p class="text-xl font-bold" style="color: var(--mint)">${{ fmt(totalBalance) }}</p>
+      <!-- Summary: cash, debts, and net balance -->
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div class="rounded-xl border p-4" style="background: var(--surface-2); border-color: var(--border)">
+          <div class="flex items-center gap-2 mb-1">
+            <i class="pi pi-wallet text-xs" style="color: var(--mint)"></i>
+            <p class="text-xs font-semibold uppercase tracking-wider" style="color: var(--text-muted)">Cash</p>
+          </div>
+          <p class="text-xl font-bold" style="color: var(--mint)">{{ money(totals.cash) }}</p>
+          <p class="text-[11px] mt-0.5" style="color: var(--text-muted)">Checking &amp; savings</p>
+        </div>
+        <div class="rounded-xl border p-4" style="background: var(--surface-2); border-color: var(--border)">
+          <div class="flex items-center gap-2 mb-1">
+            <i class="pi pi-credit-card text-xs" style="color: #f87171"></i>
+            <p class="text-xs font-semibold uppercase tracking-wider" style="color: var(--text-muted)">Debts</p>
+          </div>
+          <p class="text-xl font-bold" style="color: #f87171">{{ money(totals.debts) }}</p>
+          <p class="text-[11px] mt-0.5" style="color: var(--text-muted)">
+            Credit {{ money(totals.credit) }} · Loans {{ money(totals.loans) }}
+          </p>
+        </div>
+        <div class="rounded-xl border p-4" style="background: var(--surface-2); border-color: var(--mint)">
+          <div class="flex items-center gap-2 mb-1">
+            <i class="pi pi-equals text-xs" style="color: var(--text)"></i>
+            <p class="text-xs font-semibold uppercase tracking-wider" style="color: var(--text-muted)">Balance</p>
+          </div>
+          <p class="text-xl font-bold" :style="{ color: totals.net < 0 ? '#f87171' : 'var(--mint)' }">{{ money(totals.net) }}</p>
+          <p class="text-[11px] mt-0.5" style="color: var(--text-muted)">
+            Cash{{ totals.investments ? ` + ${money(totals.investments)} investments` : '' }} − debts
+          </p>
+        </div>
       </div>
     </div>
 
@@ -113,9 +139,26 @@ const grouped = computed(() => {
   return g
 })
 
-const totalBalance = computed(() =>
-  accounts.value.reduce((sum, a) => sum + (a.current_balance || 0), 0)
-)
+// Plaid reports credit/loan balances as positive amounts owed, so they're subtracted for the net.
+const totals = computed(() => {
+  const t = { cash: 0, investments: 0, other: 0, credit: 0, loans: 0 }
+  for (const a of accounts.value) {
+    const bal = a.current_balance || 0
+    const cat = accountTypeCategory(a)
+    if (cat === 'deposit') t.cash += bal
+    else if (cat === 'investment') t.investments += bal
+    else if (cat === 'credit') t.credit += bal
+    else if (cat === 'loan') t.loans += bal
+    else t.other += bal
+  }
+  const debts = t.credit + t.loans
+  return { ...t, debts, net: t.cash + t.investments + t.other - debts }
+})
+
+const money = (val) => {
+  const n = Number(val) || 0
+  return (n < 0 ? '−$' : '$') + fmt(Math.abs(n))
+}
 
 const fmt = (val) => val != null ? Number(val).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'
 
