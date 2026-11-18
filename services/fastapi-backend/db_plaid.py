@@ -5,6 +5,7 @@ import logging
 
 from database import get_pool
 import crypto
+from payment_detection import CASH_WITHDRAWAL_SQL
 
 logger = logging.getLogger(__name__)
 
@@ -406,8 +407,10 @@ def get_transactions_for_user(
     effective_category_sql = """COALESCE(
         t.category_override,
         CASE
-            WHEN (p.id IS NOT NULL OR LOWER(COALESCE(ba.subtype, '')) = 'mortgage')
+            WHEN ba.type = 'loan'
+                 AND (p.id IS NOT NULL OR LOWER(COALESCE(ba.subtype, '')) = 'mortgage')
                  AND t.amount > 0
+                 AND NOT """ + CASH_WITHDRAWAL_SQL + """
                 THEN 'MORTGAGE_PAYMENT'
             ELSE t.category_primary
         END
@@ -649,8 +652,10 @@ def override_transaction_mortgage_property(txn_id: int, user_id: int, property_i
     effective_category_sql = """COALESCE(
         t.category_override,
         CASE
-            WHEN (p.id IS NOT NULL OR LOWER(COALESCE(ba.subtype, '')) = 'mortgage')
+            WHEN ba.type = 'loan'
+                 AND (p.id IS NOT NULL OR LOWER(COALESCE(ba.subtype, '')) = 'mortgage')
                  AND t.amount > 0
+                 AND NOT """ + CASH_WITHDRAWAL_SQL + """
                 THEN 'MORTGAGE_PAYMENT'
             ELSE t.category_primary
         END

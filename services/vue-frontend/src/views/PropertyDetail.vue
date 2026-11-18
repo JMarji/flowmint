@@ -26,9 +26,10 @@
             </label>
             <label class="col-span-6">
               <span class="block text-[11px] mb-1" style="color: var(--text-muted)">Mortgage lender / servicer</span>
-              <InputText v-model="locationDraft.mortgage_lender" class="w-full" placeholder="e.g. Shellpoint, Citizens, Rocket Mortgage" />
+              <InputText v-model="locationDraft.mortgage_lender" class="w-full" placeholder="e.g. Citizens  —  or several: Shellpoint, Carthage Savings" />
               <span class="block text-[10px] mt-1" style="color: var(--text-muted)">
-                As it appears on your bank statement. Payments to this lender are linked to this property automatically.
+                As it appears on your bank statement (without "Withdrawal"). Separate several with commas.
+                Payments to these lenders are linked to this property automatically.
               </span>
             </label>
           </div>

@@ -35,12 +35,32 @@ _STOPWORDS = {
 }
 
 
+# Bank-statement boilerplate in front of the real payee ("Withdrawal CITIZENS", "ACH Debit SHELLPOINT").
+_LEADING_BOILERPLATE = {
+    "withdrawal", "withdrawals", "withdraw", "debit", "ach", "pos", "purchase", "preauthorized", "recurring",
+    "electronic", "online", "external", "web", "at", "to", "payment", "pmt",
+}
+
+# Cash withdrawals are never mortgage (or loan) payments, whatever account they come from.
+_CASH_RE = re.compile(r"(?<![a-z0-9])(atm|cash withdrawal|teller withdrawal|branch withdrawal)(?![a-z0-9])")
+CASH_WITHDRAWAL_SQL = (
+    "(LOWER(COALESCE(t.name, '') || ' ' || COALESCE(t.merchant_name, '')) "
+    "~ '(^|[^a-z0-9])(atm|cash withdrawal|teller withdrawal|branch withdrawal)([^a-z0-9]|$)')"
+)
+
+
+def is_cash_withdrawal(merchant_name: Optional[str], name: Optional[str]) -> bool:
+    return bool(_CASH_RE.search(f"{name or ''} {merchant_name or ''}".lower()))
+
+
 def merchant_key(merchant_name: Optional[str], name: Optional[str]) -> str:
-    """Stable key for 'who was paid': the merchant name if Plaid has one, else the first words of the
-    description with reference numbers stripped (e.g. 'ROCKET MORTGAGE PMT 88231' -> 'rocket mortgage pmt')."""
+    """Stable key for 'who was paid': the merchant name if Plaid has one, else the description minus
+    statement boilerplate and reference numbers ('Withdrawal CARTHAGE SAVINGS #88' -> 'carthage savings')."""
     if merchant_name and merchant_name.strip():
         return merchant_name.strip().lower()
     words = re.findall(r"[a-z][a-z&'.]*", (name or "").lower())
+    while len(words) > 1 and words[0] in _LEADING_BOILERPLATE:
+        words = words[1:]
     return " ".join(words[:3])
 
 
@@ -86,12 +106,15 @@ def detect_loan_payments(user_id: int) -> Dict[str, int]:
                    JOIN flowmint.bank_accounts ba ON ba.id = t.account_id
                    JOIN flowmint.bank_items bi ON bi.id = ba.item_id
                    WHERE bi.user_id = %s
+                     AND t.tag_source IS DISTINCT FROM 'auto'  -- learn from the user's own tags only
                      AND (t.mortgage_property_id IS NOT NULL OR t.category_override = 'AUTO_LOAN_PAYMENT')""",
                 (user_id,),
             )
             payee_props: Dict[str, set] = defaultdict(set)
             car_payees: set = set()
             for m, n, pid, cat in cur.fetchall():
+                if is_cash_withdrawal(m, n):
+                    continue
                 k = merchant_key(m, n)
                 if pid:
                     payee_props[k].add(pid)
@@ -123,11 +146,40 @@ def detect_loan_payments(user_id: int) -> Dict[str, int]:
                     "tag_source", "property_id"]
             candidates = [dict(zip(cols, r)) for r in cur.fetchall()]
 
-            counts = {"mortgage_tagged": 0, "mortgage_linked": 0, "mortgage_relinked": 0, "auto_loan_tagged": 0}
+            counts = {"mortgage_tagged": 0, "mortgage_linked": 0, "mortgage_relinked": 0, "mortgage_untagged": 0,
+                      "auto_loan_tagged": 0, "cash_withdrawals_cleared": 0}
+
+            # ATM/cash withdrawals tagged as mortgage payments before tags were tracked (or auto-tagged) are
+            # mistakes: clear them. Tags the user set by hand since then (tag_source = 'manual') stay.
+            cur.execute(
+                f"""UPDATE flowmint.transactions t
+                    SET category_override = NULL, mortgage_property_id = NULL, tag_source = NULL
+                    FROM flowmint.bank_accounts ba JOIN flowmint.bank_items bi ON bi.id = ba.item_id
+                    WHERE t.account_id = ba.id AND bi.user_id = %s
+                      AND t.tag_source IS DISTINCT FROM 'manual'
+                      AND (t.category_override IN ('MORTGAGE_PAYMENT', 'AUTO_LOAN_PAYMENT') OR t.mortgage_property_id IS NOT NULL)
+                      AND {CASH_WITHDRAWAL_SQL}""",
+                (user_id,),
+            )
+            counts["cash_withdrawals_cleared"] = cur.rowcount
+
             for t in candidates:
                 t["amount"] = float(t["amount"])
+                if is_cash_withdrawal(t["merchant_name"], t["name"]):
+                    continue
                 key = merchant_key(t["merchant_name"], t["name"])
                 lender_prop = _pick_by_lender(t, props)
+
+                if t["tag_source"] == "auto" and not (lender_prop or key in learned or _looks_like_mortgage(t)):
+                    # An earlier auto-tag that no longer holds up (e.g. learned from a tag the user removed).
+                    cur.execute(
+                        """UPDATE flowmint.transactions
+                           SET category_override = NULL, mortgage_property_id = NULL, tag_source = NULL
+                           WHERE id = %s AND tag_source = 'auto'""",
+                        (t["id"],),
+                    )
+                    counts["mortgage_untagged"] += 1
+                    continue
 
                 if t["tag_source"] == "auto":
                     # Already an auto-detected mortgage payment: only fix which property it belongs to.
@@ -171,11 +223,16 @@ def detect_loan_payments(user_id: int) -> Dict[str, int]:
 
 
 def lender_pattern(lender: Optional[str]) -> Optional[re.Pattern]:
-    """Whole-word, punctuation-insensitive pattern for a lender name ('Mr. Cooper' matches 'MR COOPER')."""
-    words = re.findall(r"[a-z0-9]+", (lender or "").lower())
-    if not words:
+    """Whole-word, punctuation-insensitive pattern for one or more lender names separated by commas or
+    semicolons ('Shellpoint, Carthage Savings'). 'Mr. Cooper' matches 'MR COOPER'."""
+    alternatives = []
+    for part in re.split(r"[,;]", lender or ""):
+        words = re.findall(r"[a-z0-9]+", part.lower())
+        if words:
+            alternatives.append(r"[\s.\-_*/&]*".join(map(re.escape, words)))
+    if not alternatives:
         return None
-    return re.compile(r"(?<![a-z0-9])" + r"[\s.\-_*/&]*".join(map(re.escape, words)) + r"(?![a-z0-9])")
+    return re.compile(r"(?<![a-z0-9])(?:" + "|".join(alternatives) + r")(?![a-z0-9])")
 
 
 def _pick_by_lender(t: dict, props: List[dict]) -> Optional[int]:
@@ -268,12 +325,13 @@ def match_bill_payments(user_id: int) -> int:
 
             earliest = today - timedelta(days=31 * (BILL_LOOKBACK_MONTHS + 1))
             cur.execute(
-                """SELECT t.id, t.amount, t.date, t.name, t.merchant_name
+                f"""SELECT t.id, t.amount, t.date, t.name, t.merchant_name
                    FROM flowmint.transactions t
                    JOIN flowmint.bank_accounts ba ON ba.id = t.account_id
                    JOIN flowmint.bank_items bi ON bi.id = ba.item_id
                    WHERE bi.user_id = %s AND t.amount > 0 AND t.pending = FALSE AND t.date >= %s
                      AND ba.type IN ('depository', 'credit')
+                     AND NOT {CASH_WITHDRAWAL_SQL}
                      AND NOT EXISTS (SELECT 1 FROM flowmint.bill_payments bp
                                      WHERE bp.transaction_id = t.id AND bp.status = 'matched')""",
                 (user_id, earliest),

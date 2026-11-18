@@ -12,6 +12,7 @@ from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
 from database import get_pool
+from payment_detection import CASH_WITHDRAWAL_SQL
 
 GRACE_DAYS = 15
 PAID_THRESHOLD = 0.9  # a payment within 10% of the expected amount counts as paid in full
@@ -113,10 +114,12 @@ def _get_payments(user_id: int, property_id: int, mortgage_account_id: Optional[
                   AND t.date >= %s
                   AND t.amount > 0
                   AND t.pending = FALSE
+                  AND NOT """ + CASH_WITHDRAWAL_SQL + """
                   AND (
                     t.mortgage_property_id = %s
                     OR (
                       %s::text IS NOT NULL
+                      AND ba.type = 'loan'
                       AND ba.account_id = %s::text
                       AND t.mortgage_property_id IS NULL
                       AND COALESCE(t.category_override, 'MORTGAGE_PAYMENT') = 'MORTGAGE_PAYMENT'
