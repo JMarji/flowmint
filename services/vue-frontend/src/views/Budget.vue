@@ -78,7 +78,10 @@
 
       <div class="rounded-xl border p-4" style="background: var(--surface); border-color: var(--border)">
         <div class="flex items-center justify-between mb-3">
-          <p class="text-sm font-semibold" style="color: var(--text)">Top Spending Categories</p>
+          <div>
+            <p class="text-sm font-semibold" style="color: var(--text)">Top Spending Categories</p>
+            <p class="text-[11px]" style="color: var(--text-muted)">Click a column to see its transactions</p>
+          </div>
           <p class="text-xs" style="color: var(--text-muted)">{{ displayMonth }}</p>
         </div>
         <div class="h-72">
@@ -93,6 +96,60 @@
         </div>
         <div class="h-72">
           <Doughnut :data="cashflowChartData" :options="doughnutOptions" />
+        </div>
+      </div>
+
+      <!-- Transactions behind the selected Top Spending column -->
+      <div
+        v-if="selectedCategory"
+        ref="categoryPanel"
+        class="lg:col-span-2 rounded-xl border"
+        style="background: var(--surface); border-color: var(--mint)"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3 p-4 border-b" style="border-color: var(--border)">
+          <div>
+            <p class="text-sm font-semibold" style="color: var(--text)">{{ fmtCat(selectedCategory) }} · {{ displayMonth }}</p>
+            <p class="text-xs mt-0.5" style="color: var(--text-muted)">
+              {{ selectedCategoryTxns.length }} transaction{{ selectedCategoryTxns.length === 1 ? '' : 's' }}
+              · ${{ fmt(selectedCategoryTotal) }}
+              <span v-if="selectedAccountId"> · {{ selectedAccountLabel }}</span>
+            </p>
+          </div>
+          <div class="flex items-center gap-3">
+            <RouterLink
+              v-if="selectedCategory !== 'UNCATEGORIZED'"
+              :to="{ path: '/transactions', query: transactionsQuery }"
+              class="text-xs hover:underline"
+              style="color: var(--mint)"
+            >View in Transactions →</RouterLink>
+            <button class="p-1.5 rounded-lg hover:opacity-80" style="background: var(--surface-2); color: var(--text-muted)" title="Close" @click="selectedCategory = ''">
+              <i class="pi pi-times text-xs"></i>
+            </button>
+          </div>
+        </div>
+
+        <p v-if="!selectedCategoryTxns.length" class="p-4 text-xs" style="color: var(--text-muted)">
+          No {{ fmtCat(selectedCategory).toLowerCase() }} spending in {{ displayMonth }}.
+        </p>
+        <div class="max-h-96 overflow-y-auto">
+          <div
+            v-for="t in selectedCategoryTxns"
+            :key="t.id"
+            class="flex items-center gap-3 px-4 py-2.5 border-b last:border-b-0"
+            style="border-color: var(--border)"
+          >
+            <img v-if="t.logo_url" :src="t.logo_url" class="w-8 h-8 rounded-lg flex-shrink-0" alt="" />
+            <div v-else class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style="background: var(--surface-2)">
+              <i :class="`pi ${catIcon(selectedCategory)} text-xs`" style="color: var(--text-muted)"></i>
+            </div>
+            <div class="flex-1 min-w-0">
+              <p class="text-sm truncate" style="color: var(--text)">{{ t.merchant_name || t.name }}</p>
+              <p class="text-[11px] truncate" style="color: var(--text-muted)">
+                {{ shortDate(t.date) }}<span v-if="t.account_name"> · {{ t.account_name }}</span>
+              </p>
+            </div>
+            <p class="text-sm font-semibold flex-shrink-0" style="color: var(--text)">${{ fmt(t.amount) }}</p>
+          </div>
         </div>
       </div>
     </div>
@@ -155,7 +212,8 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
+import { RouterLink } from 'vue-router'
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
@@ -299,10 +357,43 @@ const currentMonthCategoryRows = computed(() => {
     sums[key] = (sums[key] || 0) + Number(txn.amount || 0)
   }
   return Object.entries(sums)
-    .map(([label, value]) => ({ label: fmtCat(label), value }))
+    .map(([key, value]) => ({ key, label: fmtCat(key), value }))
     .sort((a, b) => b.value - a.value)
     .slice(0, 8)
 })
+
+// Drill-down: clicking a Top Spending column lists that category's transactions for the shown month.
+const selectedCategory = ref('')
+const categoryPanel = ref(null)
+
+const selectedCategoryTxns = computed(() =>
+  currentMonthTransactions.value
+    .filter(t => Number(t.amount) > 0 && (t.category || 'UNCATEGORIZED') === selectedCategory.value)
+    .sort((a, b) => (b.date || '').localeCompare(a.date || '') || Number(b.amount) - Number(a.amount))
+)
+const selectedCategoryTotal = computed(() =>
+  selectedCategoryTxns.value.reduce((s, t) => s + Number(t.amount || 0), 0)
+)
+const transactionsQuery = computed(() => {
+  const d = currentDate.value
+  const q = {
+    category: selectedCategory.value,
+    start_date: toIsoDate(new Date(d.getFullYear(), d.getMonth(), 1)),
+    end_date: toIsoDate(new Date(d.getFullYear(), d.getMonth() + 1, 0)),
+  }
+  if (selectedAccountId.value) q.account = selectedAccountId.value
+  return q
+})
+const shortDate = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+
+const selectCategoryAt = (index) => {
+  const row = currentMonthCategoryRows.value[index]
+  if (!row) return
+  selectedCategory.value = selectedCategory.value === row.key ? '' : row.key
+  if (selectedCategory.value) {
+    nextTick(() => categoryPanel.value?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }))
+  }
+}
 
 const monthInflow = computed(() =>
   currentMonthTransactions.value
@@ -352,7 +443,10 @@ const categorySpendChartData = computed(() => ({
   datasets: [{
     label: 'Spent',
     data: currentMonthCategoryRows.value.map(r => r.value),
-    backgroundColor: currentMonthCategoryRows.value.map((_, i) => palette[i % palette.length]),
+    // While a column is selected, the others fade so it's clear what the list below shows.
+    backgroundColor: currentMonthCategoryRows.value.map((r, i) =>
+      !selectedCategory.value || r.key === selectedCategory.value ? palette[i % palette.length] : `${palette[i % palette.length]}40`
+    ),
     borderRadius: 8,
   }],
 }))
@@ -369,6 +463,14 @@ const cashflowChartData = computed(() => ({
 const barChartOptions = computed(() => ({
   responsive: true,
   maintainAspectRatio: false,
+  // Whole column is the click target (not just the bar), so short bars are easy to hit.
+  interaction: { mode: 'index', intersect: false },
+  onClick: (_evt, elements) => {
+    if (elements.length) selectCategoryAt(elements[0].index)
+  },
+  onHover: (evt, elements) => {
+    if (evt.native?.target) evt.native.target.style.cursor = elements.length ? 'pointer' : 'default'
+  },
   plugins: {
     legend: { display: false },
     tooltip: {
