@@ -75,7 +75,16 @@ def override_category(txn_id: int, body: CategoryOverride, current_user: dict = 
     updated = db_plaid.override_transaction_category(txn_id, current_user["id"], body.category)
     if not updated:
         raise HTTPException(status_code=404, detail="Transaction not found")
-    return {"updated": txn_id}
+    # Tagging one payment as a loan/mortgage payment teaches detection the payee; apply it to that
+    # payee's other transactions now instead of waiting for the next sync.
+    propagated = 0
+    if body.category in ("AUTO_LOAN_PAYMENT", "MORTGAGE_PAYMENT"):
+        try:
+            r = payment_detection.detect_loan_payments(current_user["id"])
+            propagated = r["auto_loan_tagged"] + r["mortgage_tagged"]
+        except Exception:
+            pass
+    return {"updated": txn_id, "also_tagged": propagated}
 
 
 @router.patch("/transactions/{txn_id}/mortgage-property")

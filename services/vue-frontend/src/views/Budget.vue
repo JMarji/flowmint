@@ -244,6 +244,9 @@ const CATEGORIES = [
   { value: 'PERSONAL_CARE', label: 'Personal Care' },
   { value: 'TRAVEL', label: 'Travel' },
   { value: 'GENERAL_MERCHANDISE', label: 'General Merchandise' },
+  { value: 'GENERAL_SERVICES', label: 'General Services' },
+  { value: 'AUTO_LOAN_PAYMENT', label: 'Auto Loan Payment' },
+  { value: 'MORTGAGE_PAYMENT', label: 'Mortgage Payment' },
 ]
 
 const budgets = ref([])
@@ -314,7 +317,8 @@ const fmtCat = (c) => c?.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, l => 
 const catIcon = (c) => {
   const m = { FOOD_AND_DRINK: 'pi-shopping-bag', TRANSPORTATION: 'pi-car', SHOPPING: 'pi-shopping-cart',
     ENTERTAINMENT: 'pi-ticket', RENT_AND_UTILITIES: 'pi-home', MEDICAL: 'pi-heart',
-    TRAVEL: 'pi-send', GENERAL_MERCHANDISE: 'pi-box', PERSONAL_CARE: 'pi-user' }
+    TRAVEL: 'pi-send', GENERAL_MERCHANDISE: 'pi-box', PERSONAL_CARE: 'pi-user',
+    AUTO_LOAN_PAYMENT: 'pi-car', MORTGAGE_PAYMENT: 'pi-home', GENERAL_SERVICES: 'pi-wrench' }
   return m[c] || 'pi-wallet'
 }
 

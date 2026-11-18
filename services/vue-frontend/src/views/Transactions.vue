@@ -425,17 +425,23 @@ const tagTransactionCategory = async (txnId, category, label) => {
   taggingTxnId.value = txnId
   tagStatus.value = ''
   try {
-    await api.patch(`/api/transactions/${txnId}/category`, { category })
+    const res = await api.patch(`/api/transactions/${txnId}/category`, { category })
 
     const txn = transactions.value.find(t => t.id === txnId)
     if (txn) {
       txn.category_override = category
       txn.category = category
       txn.is_mortgage_payment = category === 'MORTGAGE_PAYMENT'
+      txn.tag_source = 'manual'
     }
 
     const selectedName = txn?.merchant_name || txn?.name || `#${txnId}`
-    tagStatus.value = `Tagged ${selectedName} as ${label}.`
+    const alsoTagged = Number(res.data?.also_tagged) || 0
+    tagStatus.value = alsoTagged
+      ? `Tagged ${selectedName} as ${label}, plus ${alsoTagged} other payment${alsoTagged === 1 ? '' : 's'} to the same payee.`
+      : `Tagged ${selectedName} as ${label}.`
+    // Other transactions changed on the server — refresh so they show their new category.
+    if (alsoTagged) await load()
   } catch (e) {
     tagStatus.value = e?.response?.data?.detail || `Could not tag transaction as ${label}.`
   } finally {

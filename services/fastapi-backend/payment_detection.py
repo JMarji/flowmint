@@ -28,6 +28,23 @@ _MORTGAGE_RE = re.compile(
     r"loan ?depot|shellpoint|lakeview loan|cenlar|nationstar|flagstar|dovenmuehle)(?![a-z0-9])"
 )
 
+# Car-loan payees. Explicit wording counts on its own; lender/manufacturer names also take non-loan
+# charges (charging, service, parts), so those must look like a loan payment: payment-sized and
+# repeating at about the same amount roughly a month apart.
+_AUTO_LOAN_WORDING_RE = re.compile(
+    r"(?<![a-z0-9])(auto ?loan|auto ?pmt|auto ?payment|vehicle ?loan|car ?loan|car ?payment)(?![a-z0-9])"
+)
+_AUTO_LENDER_RE = re.compile(
+    r"(?<![a-z0-9])(rivian|ally auto|toyota (motor credit|financial|fin)|lexus financial|"
+    r"(american )?honda (financial|finance|fin)|acura financial|ford (motor )?credit|gm financial|"
+    r"nissan (motor acceptance|finance)|infiniti financial|hyundai (motor )?finance|genesis finance|"
+    r"kia (motors )?finance|capital one auto|chase auto|wells fargo auto|santander consumer|"
+    r"chrysler capital|westlake (portfolio|financial)?|carvana|bmw financial|mercedes[- ]?benz financial|"
+    r"vw credit|volkswagen credit|audi financial|subaru motors finance|mazda financial|volvo car financial|"
+    r"tesla (finance|financial)|lucid financial|polestar financial)(?![a-z0-9])"
+)
+AUTO_LOAN_MIN_AMOUNT = 100.0
+
 _STOPWORDS = {
     "the", "and", "for", "bill", "bills", "payment", "payments", "pmt", "pymt", "monthly", "online",
     "autopay", "auto", "pay", "ach", "debit", "web", "inc", "llc", "co", "corp", "company", "service",
@@ -146,6 +163,20 @@ def detect_loan_payments(user_id: int) -> Dict[str, int]:
                     "tag_source", "property_id"]
             candidates = [dict(zip(cols, r)) for r in cur.fetchall()]
 
+            # Outflow history per payee, to tell a monthly loan payment from one-off charges.
+            cur.execute(
+                """SELECT t.merchant_name, t.name, t.date, t.amount
+                   FROM flowmint.transactions t
+                   JOIN flowmint.bank_accounts ba ON ba.id = t.account_id
+                   JOIN flowmint.bank_items bi ON bi.id = ba.item_id
+                   WHERE bi.user_id = %s AND ba.type = 'depository' AND t.amount > 0
+                     AND t.pending = FALSE AND t.date >= %s""",
+                (user_id, since),
+            )
+            history: Dict[str, List[tuple]] = defaultdict(list)
+            for m, n, d, amt in cur.fetchall():
+                history[merchant_key(m, n)].append((d, float(amt)))
+
             counts = {"mortgage_tagged": 0, "mortgage_linked": 0, "mortgage_relinked": 0, "mortgage_untagged": 0,
                       "auto_loan_tagged": 0, "cash_withdrawals_cleared": 0}
 
@@ -210,7 +241,9 @@ def detect_loan_payments(user_id: int) -> Dict[str, int]:
                     counts["mortgage_linked"] += 1 if prop_id else 0
                     continue
 
-                if t["category_override"] is None and (t["category_detailed"] == _PFC_CAR or key in car_payees):
+                if t["category_override"] is None and (
+                    t["category_detailed"] == _PFC_CAR or key in car_payees or _looks_like_auto_loan(t, key, history)
+                ):
                     cur.execute(
                         """UPDATE flowmint.transactions
                            SET category_override = 'AUTO_LOAN_PAYMENT', tag_source = 'auto'
@@ -220,6 +253,24 @@ def detect_loan_payments(user_id: int) -> Dict[str, int]:
                     counts["auto_loan_tagged"] += 1
         conn.commit()
     return counts
+
+
+def _looks_like_auto_loan(t: dict, key: str, history: Dict[str, List[tuple]]) -> bool:
+    text = f"{t['merchant_name'] or ''} {t['name'] or ''}".lower()
+    if _AUTO_LOAN_WORDING_RE.search(text):
+        return True
+    if not _AUTO_LENDER_RE.search(text) or t["amount"] < AUTO_LOAN_MIN_AMOUNT:
+        return False
+    return _recurs_monthly(t, history.get(key, []))
+
+
+def _recurs_monthly(t: dict, payee_history: List[tuple]) -> bool:
+    """Another charge from the same payee 25-38 days before or after, within 10% of this amount."""
+    for d, amt in payee_history:
+        gap = abs((d - t["date"]).days)
+        if 25 <= gap <= 38 and abs(amt - t["amount"]) <= max(t["amount"] * 0.10, 5.0):
+            return True
+    return False
 
 
 def lender_pattern(lender: Optional[str]) -> Optional[re.Pattern]:
