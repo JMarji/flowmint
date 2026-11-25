@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import database
 import auth_routes
-from routers import plaid, accounts, transactions, budgets, bills, properties, property_txns, documents, networth, planning, subscriptions
+from routers import plaid, accounts, transactions, budgets, bills, properties, property_txns, documents, networth, planning, subscriptions, bom
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -51,3 +51,4 @@ app.include_router(documents.router, prefix="/api")
 app.include_router(networth.router, prefix="/api")
 app.include_router(planning.router, prefix="/api")
 app.include_router(subscriptions.router, prefix="/api")
+app.include_router(bom.router, prefix="/api")

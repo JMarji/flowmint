@@ -200,6 +200,7 @@ const navItems = [
   { label: 'Properties',    to: '/properties',   icon: 'pi-building' },
   { label: 'Documents',     to: '/documents',    icon: 'pi-file' },
   { label: 'Planning',      to: '/planning',     icon: 'pi-compass' },
+  { label: 'BOM Stock',     to: '/bom-stock',    icon: 'pi-microchip' },
 ]
 </script>
 

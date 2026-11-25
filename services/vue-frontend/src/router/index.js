@@ -32,7 +32,8 @@ const router = createRouter({
         { path: 'properties', name: 'properties', component: () => import('@/views/Properties.vue') },
         { path: 'properties/:id', name: 'property-detail', component: () => import('@/views/PropertyDetail.vue') },
         { path: 'documents', name: 'documents', component: () => import('@/views/Documents.vue') },
-        { path: 'planning', name: 'planning', component: () => import('@/views/Planning.vue') }
+        { path: 'planning', name: 'planning', component: () => import('@/views/Planning.vue') },
+        { path: 'bom-stock', name: 'bom-stock', component: () => import('@/views/BomStock.vue') }
       ]
     },
     { path: '/:pathMatch(.*)*', redirect: '/dashboard' }
